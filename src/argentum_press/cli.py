@@ -23,6 +23,7 @@ from . import _ast
 from .catalog import ScryfallCatalog
 from .lowerer import KotlinLowerer
 from .pipeline import AddSetPipeline, FilesystemWriter, Parser, PipelineReport
+from .reporter import ConsoleReporter
 from .verify import CompileVerifier
 
 
@@ -62,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip phase 4 (gradle compileKotlin). Useful for fast iteration "
         "while inspecting bucket-1 output.",
     )
+    add.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force a re-fetch from Scryfall, bypassing the on-disk cache at "
+        "~/.cache/scryfall.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -85,7 +92,9 @@ def _run_add_set(args: argparse.Namespace) -> int:
     if not args.skip_verify:
         verifier = CompileVerifier(args.project_dir, java_home=args.java_home)
 
-    with ScryfallCatalog() as catalog:
+    reporter = ConsoleReporter()
+
+    with ScryfallCatalog(force_refresh=args.refresh) as catalog:
         pipeline = AddSetPipeline(
             catalog=catalog,
             parser=parser_impl,
@@ -94,10 +103,11 @@ def _run_add_set(args: argparse.Namespace) -> int:
             project_dir=args.project_dir,
             set_code=args.set,
             verifier=verifier,
+            reporter=reporter,
         )
         report = pipeline.run(limit=args.limit)
 
-    _print_report(report)
+    _print_final_summary(report)
     return 1 if report.compile_stderr else 0
 
 
@@ -118,8 +128,11 @@ def _resolve_parser() -> Parser | None:
     return _MtgCompilerParser()
 
 
-def _print_report(report: PipelineReport) -> None:
-    print(f"\n=== argentum-press: set={report.set_code} ===")
+def _print_final_summary(report: PipelineReport) -> None:
+    """The reporter has already streamed per-phase output during the run; this
+    is the closing summary that ranks bucket-2 gaps so the user knows what to
+    fix next."""
+    print(f"\n=== summary: set={report.set_code} ===")
     print(f"  already implemented:   {len(report.already_implemented):>4}")
     print(f"  deferred (parse):      {len(report.deferred_parse):>4}")
     print(f"  bucket 2 (needs ext.): {len(report.bucket_2):>4}")
@@ -132,11 +145,6 @@ def _print_report(report: PipelineReport) -> None:
             gaps_by_node[gap.missing_node] = gaps_by_node.get(gap.missing_node, 0) + 1
         for node_type, count in sorted(gaps_by_node.items(), key=lambda kv: -kv[1]):
             print(f"    {count:>4}  {node_type}")
-
-    if report.compile_stderr:
-        print("\n  Phase 4 (gradle compileKotlin) FAILED:\n")
-        for line in report.compile_stderr.splitlines():
-            print(f"    {line}")
 
 
 if __name__ == "__main__":
