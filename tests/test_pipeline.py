@@ -1,6 +1,6 @@
-"""Pipeline tests stub mtgcompiler so we can drive the orchestration without
-the real parser. Catches the wiring bugs (path computation, outcome routing,
-crash-on-compile-fail policy)."""
+"""Pipeline tests stub mtgcompiler, the catalog, and the verifier so we can
+drive the orchestration without external state. Each test exercises one of
+the four phases (triage / classify / emit / verify)."""
 
 from __future__ import annotations
 
@@ -8,19 +8,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from argentum_press import _ast as ast
+from argentum_press.existing import cards_dir
 from argentum_press.lowerer import KotlinLowerer
 from argentum_press.outcome import (
+    AlreadyImplemented,
     DeferredEmitterGap,
     DeferredParseFailed,
     Emitted,
 )
 from argentum_press.pipeline import (
-    AddCardPipeline,
-    CompileVerificationFailed,
+    AddSetPipeline,
     FilesystemWriter,
+    PipelineReport,
 )
 from argentum_press.verify import CompileFail, CompileOk, CompileResult
 
@@ -35,9 +35,6 @@ class _StubCatalog:
 
 @dataclass
 class _ScriptedParser:
-    """Looks up its response by card name. Anything not in the map is an
-    'incomplete' parse error."""
-
     responses: dict[str, ast.ParseResult] = field(default_factory=dict)
 
     def parse(self, card: dict[str, Any]) -> ast.ParseResult:
@@ -61,9 +58,9 @@ class _AlwaysFailVerifier:
         return CompileFail(exit_code=1, stdout="", stderr=self.stderr)
 
 
-def _flying_bird_card() -> dict[str, Any]:
+def _flying_bird(name: str = "Test Bird") -> dict[str, Any]:
     return {
-        "name": "Test Bird",
+        "name": name,
         "mana_cost": "{1}{U}",
         "type_line": "Creature — Bird",
         "power": "1",
@@ -72,129 +69,212 @@ def _flying_bird_card() -> dict[str, Any]:
         "rarity": "common",
         "collector_number": "1",
         "color_identity": ["U"],
-        "artist": "Anonymous",
     }
 
 
-def test_emit_writes_to_expected_argentum_path(tmp_path: Path) -> None:
-    card = _flying_bird_card()
-    parser = _ScriptedParser({
-        "Test Bird": ast.ParseResult(
-            ast=ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
-        ),
-    })
-    pipeline = AddCardPipeline(
-        catalog=_StubCatalog([card]),
-        parser=parser,
-        lowerer=KotlinLowerer(),
-        verifier=_AlwaysOkVerifier(),
-        writer=FilesystemWriter(),
-        project_dir=tmp_path,
-        set_code="por",
-    )
-    outcomes = pipeline.run()
-    assert len(outcomes) == 1
-    assert isinstance(outcomes[0], Emitted)
-
-    expected = (
-        tmp_path
-        / "mtg-sets"
-        / "src"
-        / "main"
-        / "kotlin"
-        / "com"
-        / "wingedsheep"
-        / "mtg"
-        / "sets"
-        / "definitions"
-        / "por"
-        / "cards"
-        / "TestBird.kt"
-    )
-    assert expected.exists()
-    body = expected.read_text()
-    assert 'val TestBird = card("Test Bird")' in body
-    assert "keywords(Keyword.FLYING)" in body
-
-
-def test_parse_failure_yields_deferred_parse_failed(tmp_path: Path) -> None:
-    card = _flying_bird_card() | {"name": "Untemplated"}
-    pipeline = AddCardPipeline(
-        catalog=_StubCatalog([card]),
-        parser=_ScriptedParser({}),  # no entry -> incomplete
-        lowerer=KotlinLowerer(),
-        verifier=_AlwaysOkVerifier(),
-        writer=FilesystemWriter(),
-        project_dir=tmp_path,
-        set_code="por",
-    )
-    [outcome] = pipeline.run()
-    assert isinstance(outcome, DeferredParseFailed)
-    assert outcome.name == "Untemplated"
-    assert "incomplete" in outcome.error
-
-
-def test_emitter_gap_yields_deferred_with_qualified_node(tmp_path: Path) -> None:
-    card = _flying_bird_card() | {"name": "Activated"}
-    activated_card = ast.Card(
-        (ast.ActivatedAbility((ast.TapSelf(),), (ast.DrawCards(1),)),)
-    )
-    parser = _ScriptedParser({"Activated": ast.ParseResult(ast=activated_card)})
-    pipeline = AddCardPipeline(
-        catalog=_StubCatalog([card]),
-        parser=parser,
-        lowerer=KotlinLowerer(),
-        verifier=_AlwaysOkVerifier(),
-        writer=FilesystemWriter(),
-        project_dir=tmp_path,
-        set_code="por",
-    )
-    [outcome] = pipeline.run()
-    gap = outcome
-    assert isinstance(gap, DeferredEmitterGap)
-    assert "ActivatedAbility" in gap.missing_node
-
-
-def test_compile_failure_raises_with_outcome_attached(tmp_path: Path) -> None:
-    card = _flying_bird_card()
-    parser = _ScriptedParser({
-        "Test Bird": ast.ParseResult(
-            ast=ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
-        ),
-    })
-    pipeline = AddCardPipeline(
-        catalog=_StubCatalog([card]),
-        parser=parser,
-        lowerer=KotlinLowerer(),
-        verifier=_AlwaysFailVerifier(stderr="kotlinc: unresolved reference"),
-        writer=FilesystemWriter(),
-        project_dir=tmp_path,
-        set_code="por",
-    )
-    with pytest.raises(CompileVerificationFailed) as info:
-        pipeline.run()
-    assert info.value.outcome.name == "Test Bird"
-    assert "unresolved reference" in info.value.outcome.stderr
-
-
-def test_limit_caps_processing(tmp_path: Path) -> None:
-    cards = [
-        _flying_bird_card() | {"name": f"Bird {i}"} for i in range(5)
-    ]
-    parser = _ScriptedParser({
-        c["name"]: ast.ParseResult(
-            ast=ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
-        )
-        for c in cards
-    })
-    pipeline = AddCardPipeline(
+def _build_pipeline(
+    tmp_path: Path,
+    *,
+    cards: list[dict[str, Any]],
+    parser: _ScriptedParser,
+    verifier: _AlwaysOkVerifier | _AlwaysFailVerifier | None = None,
+) -> AddSetPipeline:
+    return AddSetPipeline(
         catalog=_StubCatalog(cards),
         parser=parser,
         lowerer=KotlinLowerer(),
-        verifier=_AlwaysOkVerifier(),
         writer=FilesystemWriter(),
         project_dir=tmp_path,
         set_code="por",
+        verifier=verifier,
     )
-    outcomes = pipeline.run(limit=2)
-    assert len(outcomes) == 2
+
+
+# ---- triage ----
+
+def test_already_implemented_cards_are_not_processed(tmp_path: Path) -> None:
+    target = cards_dir(tmp_path, "por") / "TestBird.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('val TestBird = card("Test Bird") { }\n')
+
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird()],
+        parser=_ScriptedParser(),  # would fail on any parse — we shouldn't call it
+    )
+    report = pipeline.run()
+    assert len(report.already_implemented) == 1
+    assert report.already_implemented[0].name == "Test Bird"
+    assert report.emitted == ()
+    assert report.deferred_parse == ()
+
+
+def test_dfc_already_implemented_matches_by_front_face(tmp_path: Path) -> None:
+    target = cards_dir(tmp_path, "por") / "Day.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('val DayNight = card("Day // Night") { }\n')
+
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird("Day // Night")],
+        parser=_ScriptedParser(),
+    )
+    report = pipeline.run()
+    assert len(report.already_implemented) == 1
+
+
+# ---- classify ----
+
+def test_parse_failure_yields_deferred_parse(tmp_path: Path) -> None:
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird("Untemplated")],
+        parser=_ScriptedParser(),  # no entry => incomplete
+    )
+    report = pipeline.run()
+    assert len(report.deferred_parse) == 1
+    assert report.deferred_parse[0].name == "Untemplated"
+    assert "incomplete" in report.deferred_parse[0].error
+    assert report.emitted == ()
+
+
+def test_emitter_gap_yields_bucket_2_with_node_type(tmp_path: Path) -> None:
+    activated = ast.Card(
+        (ast.ActivatedAbility((ast.TapSelf(),), (ast.DrawCards(1),)),)
+    )
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird("Activated")],
+        parser=_ScriptedParser({"Activated": ast.ParseResult(ast=activated)}),
+    )
+    report = pipeline.run()
+    assert len(report.bucket_2) == 1
+    assert report.bucket_2[0].name == "Activated"
+    assert "ActivatedAbility" in report.bucket_2[0].missing_node
+    assert report.emitted == ()
+
+
+# ---- emit ----
+
+def test_bucket_1_is_written_at_argentum_path(tmp_path: Path) -> None:
+    flying_ast = ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird()],
+        parser=_ScriptedParser({"Test Bird": ast.ParseResult(ast=flying_ast)}),
+    )
+    report = pipeline.run()
+    assert len(report.emitted) == 1
+    expected = cards_dir(tmp_path, "por") / "TestBird.kt"
+    assert report.emitted[0].path == expected
+    assert expected.exists()
+    assert "keywords(Keyword.FLYING)" in expected.read_text()
+
+
+# ---- verify (phase 4 is a stub) ----
+
+def test_phase_4_skipped_when_no_verifier(tmp_path: Path) -> None:
+    flying_ast = ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird()],
+        parser=_ScriptedParser({"Test Bird": ast.ParseResult(ast=flying_ast)}),
+        verifier=None,
+    )
+    report = pipeline.run()
+    assert report.compile_stderr is None
+
+
+def test_phase_4_skipped_when_nothing_was_emitted(tmp_path: Path) -> None:
+    # Bucket-2 only; phase 4 doesn't run.
+    activated = ast.Card(
+        (ast.ActivatedAbility((ast.TapSelf(),), (ast.DrawCards(1),)),)
+    )
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird("Activated")],
+        parser=_ScriptedParser({"Activated": ast.ParseResult(ast=activated)}),
+        verifier=_AlwaysFailVerifier(stderr="should not run"),
+    )
+    report = pipeline.run()
+    assert report.compile_stderr is None
+
+
+def test_phase_4_records_compile_stderr_without_crashing(tmp_path: Path) -> None:
+    flying_ast = ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird()],
+        parser=_ScriptedParser({"Test Bird": ast.ParseResult(ast=flying_ast)}),
+        verifier=_AlwaysFailVerifier(stderr="kotlinc: unresolved reference: Effects.Wat"),
+    )
+    report = pipeline.run()
+    assert report.compile_stderr is not None
+    assert "unresolved reference" in report.compile_stderr
+    # The file is still on disk; we report the failure, we don't roll back.
+    assert len(report.emitted) == 1
+
+
+def test_phase_4_compile_ok_leaves_stderr_unset(tmp_path: Path) -> None:
+    flying_ast = ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[_flying_bird()],
+        parser=_ScriptedParser({"Test Bird": ast.ParseResult(ast=flying_ast)}),
+        verifier=_AlwaysOkVerifier(),
+    )
+    report = pipeline.run()
+    assert report.compile_stderr is None
+
+
+# ---- limit ----
+
+def test_limit_caps_processing(tmp_path: Path) -> None:
+    cards = [_flying_bird(f"Bird {i}") for i in range(5)]
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=cards,
+        parser=_ScriptedParser({
+            c["name"]: ast.ParseResult(
+                ast=ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+            )
+            for c in cards
+        }),
+    )
+    report = pipeline.run(limit=2)
+    assert len(report.emitted) == 2
+
+
+# ---- report shape ----
+
+def test_all_outcomes_aggregates_every_bucket(tmp_path: Path) -> None:
+    target = cards_dir(tmp_path, "por") / "Existing.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('val Existing = card("Existing") { }\n')
+
+    flying_card = _flying_bird()
+    activated_card = _flying_bird("Activated")
+    untemplated_card = _flying_bird("Untemplated")
+    existing_card = _flying_bird("Existing")
+    activated_ast = ast.Card(
+        (ast.ActivatedAbility((ast.TapSelf(),), (ast.DrawCards(1),)),)
+    )
+
+    pipeline = _build_pipeline(
+        tmp_path,
+        cards=[existing_card, flying_card, activated_card, untemplated_card],
+        parser=_ScriptedParser({
+            "Test Bird": ast.ParseResult(
+                ast=ast.Card((ast.KeywordAbility(ast.Keyword.FLYING),))
+            ),
+            "Activated": ast.ParseResult(ast=activated_ast),
+            # "Untemplated" intentionally missing -> parse error
+        }),
+    )
+    report: PipelineReport = pipeline.run()
+    assert {type(o).__name__ for o in report.all_outcomes} == {
+        "AlreadyImplemented",
+        "Emitted",
+        "DeferredEmitterGap",
+        "DeferredParseFailed",
+    }

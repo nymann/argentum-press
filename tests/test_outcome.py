@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from argentum_press.outcome import (
+    AlreadyImplemented,
     CardOutcome,
     CompileFailed,
     DeferredEmitterGap,
@@ -20,6 +21,8 @@ from argentum_press.outcome import (
 
 def classify(outcome: CardOutcome) -> str:
     match outcome:
+        case AlreadyImplemented():
+            return "already"
         case Emitted():
             return "emitted"
         case DeferredParseFailed():
@@ -28,6 +31,10 @@ def classify(outcome: CardOutcome) -> str:
             return "deferred-gap"
         case CompileFailed():
             return "compile-failed"
+
+
+def test_already_implemented_classifies() -> None:
+    assert classify(AlreadyImplemented("Already Have It")) == "already"
 
 
 def test_emitted_classifies() -> None:

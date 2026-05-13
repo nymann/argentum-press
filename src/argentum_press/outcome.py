@@ -13,6 +13,14 @@ from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
+class AlreadyImplemented:
+    """argentum-engine already has this card. The pipeline records it for the
+    summary count but doesn't process it further."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class Emitted:
     """The card parsed, lowered, was written, and compiled cleanly."""
 
@@ -46,4 +54,10 @@ class CompileFailed:
     stderr: str
 
 
-CardOutcome = Emitted | DeferredParseFailed | DeferredEmitterGap | CompileFailed
+CardOutcome = (
+    AlreadyImplemented
+    | Emitted
+    | DeferredParseFailed
+    | DeferredEmitterGap
+    | CompileFailed
+)

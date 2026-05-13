@@ -1,4 +1,16 @@
-"""argentum-press command-line entry point."""
+"""argentum-press command-line entry point.
+
+Usage:
+
+    argentum-press add-set <code> --project-dir <path> [--limit N]
+                                  [--java-home PATH] [--skip-verify]
+
+The flow has four phases (see pipeline.AddSetPipeline):
+  1. triage      — subtract cards argentum-engine already has
+  2. classify    — bucket 1 (we can emit) vs bucket 2 (needs engine extension)
+  3. emit        — write bucket-1 .kt files
+  4. verify      — single gradle compileKotlin run (optional)
+"""
 
 from __future__ import annotations
 
@@ -10,9 +22,8 @@ from typing import Any
 from . import _ast
 from .catalog import ScryfallCatalog
 from .lowerer import KotlinLowerer
-from .outcome import CardOutcome, DeferredEmitterGap, DeferredParseFailed, Emitted
-from .pipeline import AddCardPipeline, FilesystemWriter, Parser
-from .verify import CompileOk, CompileVerifier
+from .pipeline import AddSetPipeline, FilesystemWriter, Parser, PipelineReport
+from .verify import CompileVerifier
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,10 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     add = subparsers.add_parser(
-        "add-card",
-        help="Fetch a Scryfall set and emit Kotlin sources into argentum-engine.",
+        "add-set",
+        help="Fetch a Scryfall set and emit missing cards into argentum-engine.",
     )
-    add.add_argument("--set", required=True, help="Scryfall set code, e.g. 'blb'.")
+    add.add_argument("set", help="Scryfall set code, e.g. 'blb'.")
     add.add_argument(
         "--project-dir",
         required=True,
@@ -48,48 +59,46 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument(
         "--skip-verify",
         action="store_true",
-        help="Skip the gradle compileKotlin step. Useful while mtgcompiler "
-        "is being adapted and we want to inspect the emitted files first.",
+        help="Skip phase 4 (gradle compileKotlin). Useful for fast iteration "
+        "while inspecting bucket-1 output.",
     )
 
     args = parser.parse_args(argv)
 
-    if args.command == "add-card":
-        return _run_add_card(args)
+    if args.command == "add-set":
+        return _run_add_set(args)
 
     return 1
 
 
-def _run_add_card(args: argparse.Namespace) -> int:
+def _run_add_set(args: argparse.Namespace) -> int:
     parser_impl = _resolve_parser()
     if parser_impl is None:
         print(
             "mtgcompiler is not yet exposing the parse() interface argentum-press "
-            "expects. Adapt it (or wire a stub) before running add-card.",
+            "expects. Adapt it (or wire a stub) before running add-set.",
             file=sys.stderr,
         )
         return 2
 
-    verifier: CompileVerifier | _NoopVerifier
-    if args.skip_verify:
-        verifier = _NoopVerifier()
-    else:
+    verifier = None
+    if not args.skip_verify:
         verifier = CompileVerifier(args.project_dir, java_home=args.java_home)
 
     with ScryfallCatalog() as catalog:
-        pipeline = AddCardPipeline(
+        pipeline = AddSetPipeline(
             catalog=catalog,
             parser=parser_impl,
             lowerer=KotlinLowerer(),
-            verifier=verifier,  # type: ignore[arg-type]
             writer=FilesystemWriter(),
             project_dir=args.project_dir,
             set_code=args.set,
+            verifier=verifier,
         )
-        outcomes = pipeline.run(limit=args.limit)
+        report = pipeline.run(limit=args.limit)
 
-    _print_report(outcomes, args.set)
-    return 0
+    _print_report(report)
+    return 1 if report.compile_stderr else 0
 
 
 def _resolve_parser() -> Parser | None:
@@ -109,30 +118,25 @@ def _resolve_parser() -> Parser | None:
     return _MtgCompilerParser()
 
 
-class _NoopVerifier:
-    """Stand-in verifier used with --skip-verify."""
+def _print_report(report: PipelineReport) -> None:
+    print(f"\n=== argentum-press: set={report.set_code} ===")
+    print(f"  already implemented:   {len(report.already_implemented):>4}")
+    print(f"  deferred (parse):      {len(report.deferred_parse):>4}")
+    print(f"  bucket 2 (needs ext.): {len(report.bucket_2):>4}")
+    print(f"  bucket 1 emitted:      {len(report.emitted):>4}")
 
-    def verify(self) -> CompileOk:
-        return CompileOk()
-
-
-def _print_report(outcomes: list[CardOutcome], set_code: str) -> None:
-    emitted = [o for o in outcomes if isinstance(o, Emitted)]
-    parse_failed = [o for o in outcomes if isinstance(o, DeferredParseFailed)]
-    gaps = [o for o in outcomes if isinstance(o, DeferredEmitterGap)]
-
-    print(f"\n=== argentum-press: set={set_code} ===")
-    print(f"  emitted:           {len(emitted):>4}")
-    print(f"  deferred (parse):  {len(parse_failed):>4}")
-    print(f"  deferred (gap):    {len(gaps):>4}")
-
-    if gaps:
-        print("\n  Emitter gaps (next @register handlers to write):")
-        unique: dict[str, int] = {}
-        for gap in gaps:
-            unique[gap.missing_node] = unique.get(gap.missing_node, 0) + 1
-        for node_type, count in sorted(unique.items(), key=lambda kv: -kv[1]):
+    if report.bucket_2:
+        print("\n  Bucket-2 ranked by missing argentum primitive:")
+        gaps_by_node: dict[str, int] = {}
+        for gap in report.bucket_2:
+            gaps_by_node[gap.missing_node] = gaps_by_node.get(gap.missing_node, 0) + 1
+        for node_type, count in sorted(gaps_by_node.items(), key=lambda kv: -kv[1]):
             print(f"    {count:>4}  {node_type}")
+
+    if report.compile_stderr:
+        print("\n  Phase 4 (gradle compileKotlin) FAILED:\n")
+        for line in report.compile_stderr.splitlines():
+            print(f"    {line}")
 
 
 if __name__ == "__main__":
