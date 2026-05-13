@@ -16,6 +16,9 @@ in, by parsing the stderr into per-file errors.
 
 from __future__ import annotations
 
+import os
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,6 +37,40 @@ from .outcome import (
 from .reporter import NullReporter, Reporter
 from .template import _pascal_case, render
 from .verify import CompileFail, CompileOk, CompileResult
+
+# ---- classify-loop result variants ----
+#
+# The classify phase produces one of these per card. We surface them as
+# their own discriminated union (rather than the public CardOutcome) so a
+# successful bucket-1 classification can carry the lowered body forward
+# to the emit phase without re-running the lowerer. Each variant is a
+# frozen dataclass with picklable fields so the same shape works in
+# either the serial or process-pool path.
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifyParseFailed:
+    outcome: DeferredParseFailed
+    worker_pid: int | None = None
+    elapsed_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifyBucket1:
+    card: dict[str, Any]
+    body: str
+    worker_pid: int | None = None
+    elapsed_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassifyBucket2:
+    outcome: DeferredEmitterGap
+    worker_pid: int | None = None
+    elapsed_s: float | None = None
+
+
+_ClassifyResult = _ClassifyParseFailed | _ClassifyBucket1 | _ClassifyBucket2
 
 
 class Catalog(Protocol):
@@ -94,6 +131,13 @@ class AddSetPipeline:
     reporter: Reporter = field(default_factory=NullReporter)
     """Receives phase + per-card events as the run progresses. Default no-op."""
 
+    workers: int = 1
+    """When > 1, the classify phase runs each card in a ProcessPoolExecutor
+    worker. Default 1 (serial) keeps tests deterministic and lets them inject
+    fake parsers; the CLI passes os.cpu_count(). Workers always parse via
+    mtgcompiler.parse directly — the injected `parser` is only used on the
+    serial path."""
+
     def run(self, limit: int | None = None) -> PipelineReport:
         cards = self._fetch(limit)
         already, pending = self._triage(cards)
@@ -150,29 +194,49 @@ class AddSetPipeline:
         deferred_parse: list[DeferredParseFailed] = []
         bucket_1: list[tuple[dict[str, Any], str]] = []
         bucket_2: list[DeferredEmitterGap] = []
-        for card in pending:
-            name = card["name"]
-            result = self.parser.parse(card)
-            if not result.ok:
-                outcome = DeferredParseFailed(name, _format_error(result.error))
-                deferred_parse.append(outcome)
-                self.reporter.card_parse_failed(outcome)
-                continue
-            assert result.ast is not None
-            match classify(result.ast, self.lowerer):
-                case Bucket1(body=body):
+        for result in self._iter_classifications(pending):
+            match result:
+                case _ClassifyParseFailed(outcome=outcome, worker_pid=pid, elapsed_s=el):
+                    deferred_parse.append(outcome)
+                    self.reporter.card_parse_failed(
+                        outcome, worker_pid=pid, elapsed_s=el
+                    )
+                case _ClassifyBucket1(card=card, body=body, worker_pid=pid, elapsed_s=el):
                     bucket_1.append((card, body))
-                    self.reporter.card_classified_bucket_1(name)
-                case Bucket2(missing_node=node_type):
-                    outcome = DeferredEmitterGap(name, node_type)
+                    self.reporter.card_classified_bucket_1(
+                        card["name"], worker_pid=pid, elapsed_s=el
+                    )
+                case _ClassifyBucket2(outcome=outcome, worker_pid=pid, elapsed_s=el):
                     bucket_2.append(outcome)
-                    self.reporter.card_classified_bucket_2(outcome)
+                    self.reporter.card_classified_bucket_2(
+                        outcome, worker_pid=pid, elapsed_s=el
+                    )
         self.reporter.phase_classify_end(
             bucket_1=len(bucket_1),
             bucket_2=len(bucket_2),
             parse_failed=len(deferred_parse),
         )
         return deferred_parse, bucket_1, bucket_2
+
+    def _iter_classifications(
+        self, pending: list[dict[str, Any]]
+    ) -> Iterator[_ClassifyResult]:
+        if self.workers <= 1:
+            for card in pending:
+                yield _classify_one(card, self.parser, self.lowerer)
+            return
+
+        # Process-pool path: each worker (re-)imports mtgcompiler and builds
+        # its own cached compiler on first call. We use as_completed (not map)
+        # so results stream out as workers finish — otherwise a single slow
+        # card at the front of the list blocks the reporter from displaying
+        # every fast card behind it, which makes the run look stuck.
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        with ProcessPoolExecutor(max_workers=self.workers) as pool:
+            futures = [pool.submit(_classify_card_worker, card) for card in pending]
+            for future in as_completed(futures):
+                yield future.result()
 
     # ---- phase 3: emit ----
 
@@ -233,3 +297,66 @@ def _format_error(error: _ast.ParseError | None) -> str:
     if error.position is not None:
         return f"[{error.kind}@{error.position}] {error.message}"
     return f"[{error.kind}] {error.message}"
+
+
+def _classify_one(
+    card: dict[str, Any], parser: Parser, lowerer: KotlinLowerer
+) -> _ClassifyResult:
+    """Parse + classify one card. Pure function — shared by the serial path
+    on the pipeline and the worker entry below. Stamps wall-clock elapsed
+    time so the reporter can flag slow cards."""
+    name = card["name"]
+    t0 = time.perf_counter()
+    result = parser.parse(card)
+    if not result.ok:
+        elapsed = time.perf_counter() - t0
+        return _ClassifyParseFailed(
+            DeferredParseFailed(name, _format_error(result.error)),
+            elapsed_s=elapsed,
+        )
+    assert result.ast is not None
+    match classify(result.ast, lowerer):
+        case Bucket1(body=body):
+            elapsed = time.perf_counter() - t0
+            return _ClassifyBucket1(card=card, body=body, elapsed_s=elapsed)
+        case Bucket2(missing_node=node_type):
+            elapsed = time.perf_counter() - t0
+            return _ClassifyBucket2(
+                DeferredEmitterGap(name, node_type), elapsed_s=elapsed
+            )
+
+
+# Per-worker singletons. ProcessPoolExecutor uses 'spawn' on macOS, so each
+# worker process gets its own fresh copies and rebuilds the Lark compiler
+# on first parse. We cache here so successive cards in the same worker reuse
+# the same parser + lowerer instead of rebuilding 250 times.
+_WORKER_PARSER: Parser | None = None
+_WORKER_LOWERER: KotlinLowerer | None = None
+
+
+def _classify_card_worker(card: dict[str, Any]) -> _ClassifyResult:
+    """Top-level worker entry — must be importable so ProcessPoolExecutor can
+    pickle it. Workers always parse via mtgcompiler directly; the pipeline's
+    injected `parser` is only honored on the serial path (see workers field)."""
+    global _WORKER_PARSER, _WORKER_LOWERER
+    if _WORKER_PARSER is None:
+        import mtgcompiler  # type: ignore[import-untyped]
+
+        class _MtgCompilerParser:
+            def parse(self, card: dict[str, Any]) -> _ast.ParseResult:
+                return mtgcompiler.parse(card)  # type: ignore[no-any-return]
+
+        _WORKER_PARSER = _MtgCompilerParser()
+    if _WORKER_LOWERER is None:
+        _WORKER_LOWERER = KotlinLowerer()
+    result = _classify_one(card, _WORKER_PARSER, _WORKER_LOWERER)
+    pid = os.getpid()
+    # Stamp the worker pid onto the result so the reporter can show which
+    # worker did the parse. Preserve elapsed_s that _classify_one measured.
+    match result:
+        case _ClassifyParseFailed(outcome=o, elapsed_s=el):
+            return _ClassifyParseFailed(outcome=o, worker_pid=pid, elapsed_s=el)
+        case _ClassifyBucket1(card=c, body=b, elapsed_s=el):
+            return _ClassifyBucket1(card=c, body=b, worker_pid=pid, elapsed_s=el)
+        case _ClassifyBucket2(outcome=o, elapsed_s=el):
+            return _ClassifyBucket2(outcome=o, worker_pid=pid, elapsed_s=el)

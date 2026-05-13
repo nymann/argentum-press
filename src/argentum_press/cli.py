@@ -15,6 +15,7 @@ The flow has four phases (see pipeline.AddSetPipeline):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Force a re-fetch from Scryfall, bypassing the on-disk cache at "
         "~/.cache/scryfall.",
     )
+    add.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="Process workers for the classify phase. mtgcompiler's Earley "
+        "parser is ~1s/card so this phase dominates wall-clock; cpu_count is "
+        "the default. Set 1 to disable parallelism (useful for debuggers).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -104,6 +113,7 @@ def _run_add_set(args: argparse.Namespace) -> int:
             set_code=args.set,
             verifier=verifier,
             reporter=reporter,
+            workers=args.workers,
         )
         report = pipeline.run(limit=args.limit)
 

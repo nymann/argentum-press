@@ -15,6 +15,7 @@ keeps them apart at the cost of one extra constructor argument.
 from __future__ import annotations
 
 import sys
+import time
 from typing import Protocol, TextIO
 
 from .outcome import (
@@ -34,9 +35,27 @@ class Reporter(Protocol):
     def phase_triage_end(self, *, already_implemented: int, pending: int) -> None: ...
 
     def phase_classify_start(self, pending: int) -> None: ...
-    def card_parse_failed(self, outcome: DeferredParseFailed) -> None: ...
-    def card_classified_bucket_1(self, name: str) -> None: ...
-    def card_classified_bucket_2(self, outcome: DeferredEmitterGap) -> None: ...
+    def card_parse_failed(
+        self,
+        outcome: DeferredParseFailed,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: ...
+    def card_classified_bucket_1(
+        self,
+        name: str,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: ...
+    def card_classified_bucket_2(
+        self,
+        outcome: DeferredEmitterGap,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: ...
     def phase_classify_end(self, *, bucket_1: int, bucket_2: int, parse_failed: int) -> None: ...
 
     def phase_emit_start(self, bucket_1: int) -> None: ...
@@ -56,9 +75,27 @@ class NullReporter:
     def phase_triage_fetched(self, total: int, cache_state: str) -> None: pass
     def phase_triage_end(self, *, already_implemented: int, pending: int) -> None: pass
     def phase_classify_start(self, pending: int) -> None: pass
-    def card_parse_failed(self, outcome: DeferredParseFailed) -> None: pass
-    def card_classified_bucket_1(self, name: str) -> None: pass
-    def card_classified_bucket_2(self, outcome: DeferredEmitterGap) -> None: pass
+    def card_parse_failed(
+        self,
+        outcome: DeferredParseFailed,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: pass
+    def card_classified_bucket_1(
+        self,
+        name: str,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: pass
+    def card_classified_bucket_2(
+        self,
+        outcome: DeferredEmitterGap,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None: pass
     def phase_classify_end(self, *, bucket_1: int, bucket_2: int, parse_failed: int) -> None: pass
     def phase_emit_start(self, bucket_1: int) -> None: pass
     def card_emitted(self, outcome: Emitted) -> None: pass
@@ -78,6 +115,10 @@ class ConsoleReporter:
         self._pending: int = 0
         self._classified: int = 0
         self._emitted_seen: int = 0
+        # Maps worker pid -> a short index (w0, w1, ...) assigned in order
+        # of first appearance. Keeps the per-card prefix compact while still
+        # letting the user tell workers apart.
+        self._worker_indices: dict[int, int] = {}
 
     # ---- internal ----
 
@@ -107,19 +148,51 @@ class ConsoleReporter:
         self._header(f"phase 2: classify  ({pending} cards)")
         self._classified = 0
 
-    def _tick(self) -> str:
+    def _tick(self, worker_pid: int | None, elapsed_s: float | None) -> str:
         self._classified += 1
-        return f"  [{self._classified:>3}/{self._pending:>3}]"
+        ts = time.strftime("%H:%M:%S")
+        parts = [ts]
+        if worker_pid is not None:
+            parts.append(self._worker_label(worker_pid))
+        if elapsed_s is not None:
+            parts.append(f"{elapsed_s:5.1f}s")
+        return f"  [{' '.join(parts)}]  [{self._classified:>3}/{self._pending:>3}]"
 
-    def card_parse_failed(self, outcome: DeferredParseFailed) -> None:
-        self._print(f"{self._tick()} ⚠  parse  {outcome.name}  ({outcome.error})")
+    def _worker_label(self, pid: int) -> str:
+        if pid not in self._worker_indices:
+            self._worker_indices[pid] = len(self._worker_indices)
+        return f"w{self._worker_indices[pid]}"
 
-    def card_classified_bucket_1(self, name: str) -> None:
-        self._print(f"{self._tick()} ✓  b1     {name}")
-
-    def card_classified_bucket_2(self, outcome: DeferredEmitterGap) -> None:
+    def card_parse_failed(
+        self,
+        outcome: DeferredParseFailed,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None:
         self._print(
-            f"{self._tick()} ✗  b2     {outcome.name}"
+            f"{self._tick(worker_pid, elapsed_s)} ⚠  parse  {outcome.name}"
+            f"  ({outcome.error})"
+        )
+
+    def card_classified_bucket_1(
+        self,
+        name: str,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None:
+        self._print(f"{self._tick(worker_pid, elapsed_s)} ✓  b1     {name}")
+
+    def card_classified_bucket_2(
+        self,
+        outcome: DeferredEmitterGap,
+        *,
+        worker_pid: int | None = None,
+        elapsed_s: float | None = None,
+    ) -> None:
+        self._print(
+            f"{self._tick(worker_pid, elapsed_s)} ✗  b2     {outcome.name}"
             f"  (missing {_short_node(outcome.missing_node)})"
         )
 
