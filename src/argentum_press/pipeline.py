@@ -35,7 +35,7 @@ from .outcome import (
     Emitted,
 )
 from .reporter import NullReporter, Reporter
-from .template import _pascal_case, render
+from .template import pascal_case, render
 from .verify import CompileFail, CompileOk, CompileResult
 
 # ---- classify-loop result variants ----
@@ -278,7 +278,7 @@ class AddSetPipeline:
     def _target_path(self, card_name: str) -> Path:
         return (
             existing.cards_dir(self.project_dir, self.set_code)
-            / f"{_pascal_case(card_name)}.kt"
+            / f"{pascal_case(card_name)}.kt"
         )
 
 
@@ -330,26 +330,26 @@ def _classify_one(
 # worker process gets its own fresh copies and rebuilds the Lark compiler
 # on first parse. We cache here so successive cards in the same worker reuse
 # the same parser + lowerer instead of rebuilding 250 times.
-_WORKER_PARSER: Parser | None = None
-_WORKER_LOWERER: KotlinLowerer | None = None
+_worker_parser: Parser | None = None
+_worker_lowerer: KotlinLowerer | None = None
 
 
 def _classify_card_worker(card: dict[str, Any]) -> _ClassifyResult:
     """Top-level worker entry — must be importable so ProcessPoolExecutor can
     pickle it. Workers always parse via mtgcompiler directly; the pipeline's
     injected `parser` is only honored on the serial path (see workers field)."""
-    global _WORKER_PARSER, _WORKER_LOWERER
-    if _WORKER_PARSER is None:
+    global _worker_parser, _worker_lowerer
+    if _worker_parser is None:
         import mtgcompiler  # type: ignore[import-untyped]
 
         class _MtgCompilerParser:
             def parse(self, card: dict[str, Any]) -> _ast.ParseResult:
                 return mtgcompiler.parse(card)  # type: ignore[no-any-return]
 
-        _WORKER_PARSER = _MtgCompilerParser()
-    if _WORKER_LOWERER is None:
-        _WORKER_LOWERER = KotlinLowerer()
-    result = _classify_one(card, _WORKER_PARSER, _WORKER_LOWERER)
+        _worker_parser = _MtgCompilerParser()
+    if _worker_lowerer is None:
+        _worker_lowerer = KotlinLowerer()
+    result = _classify_one(card, _worker_parser, _worker_lowerer)
     pid = os.getpid()
     # Stamp the worker pid onto the result so the reporter can show which
     # worker did the parse. Preserve elapsed_s that _classify_one measured.

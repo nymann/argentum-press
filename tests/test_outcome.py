@@ -2,7 +2,7 @@
 
 The point is less to test dataclass machinery (Python handles that) and more
 to pin the variant set with a `match` statement: if a new variant lands without
-a case here, mypy / a future exhaustiveness check will surface it.
+a case here, pyright / a future exhaustiveness check will surface it.
 """
 
 from __future__ import annotations

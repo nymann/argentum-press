@@ -7,6 +7,8 @@ order, metadata block.
 
 from __future__ import annotations
 
+from typing import Any
+
 from argentum_press.template import render
 
 
@@ -96,7 +98,7 @@ def test_escapes_quotes_and_newlines() -> None:
 
 
 def test_empty_color_identity_omits_field() -> None:
-    card = {
+    card: dict[str, Any] = {
         "name": "Colorless",
         "mana_cost": "{1}",
         "type_line": "Artifact",
@@ -110,7 +112,7 @@ def test_empty_color_identity_omits_field() -> None:
 
 
 def test_unmapped_rarity_skipped() -> None:
-    card = {
+    card: dict[str, Any] = {
         "name": "Weird",
         "mana_cost": "{1}",
         "type_line": "Instant",
@@ -124,7 +126,7 @@ def test_unmapped_rarity_skipped() -> None:
 
 
 def test_braces_balance() -> None:
-    card = {
+    card: dict[str, Any] = {
         "name": "Empty",
         "mana_cost": "{1}",
         "type_line": "Artifact",

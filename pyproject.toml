@@ -20,7 +20,7 @@ dev = [
     "pytest>=8.0",
     "pytest-httpx>=0.30",
     "ruff>=0.6",
-    "mypy>=1.10",
+    "pyright>=1.1.380",
 ]
 
 [build-system]
@@ -37,8 +37,6 @@ target-version = "py314"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
-[tool.mypy]
-python_version = "3.14"
-strict = true
-warn_return_any = true
-warn_unused_ignores = true
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"

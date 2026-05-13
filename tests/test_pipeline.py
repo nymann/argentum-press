@@ -11,12 +11,6 @@ from typing import Any
 from argentum_press import _ast as ast
 from argentum_press.existing import cards_dir
 from argentum_press.lowerer import KotlinLowerer
-from argentum_press.outcome import (
-    AlreadyImplemented,
-    DeferredEmitterGap,
-    DeferredParseFailed,
-    Emitted,
-)
 from argentum_press.pipeline import (
     AddSetPipeline,
     FilesystemWriter,
@@ -33,9 +27,13 @@ class _StubCatalog:
         return self.cards
 
 
+def _empty_responses() -> dict[str, ast.ParseResult]:
+    return {}
+
+
 @dataclass
 class _ScriptedParser:
-    responses: dict[str, ast.ParseResult] = field(default_factory=dict)
+    responses: dict[str, ast.ParseResult] = field(default_factory=_empty_responses)
 
     def parse(self, card: dict[str, Any]) -> ast.ParseResult:
         return self.responses.get(

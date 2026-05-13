@@ -31,7 +31,7 @@ _RARITY: dict[str, str] = {
 def render(card: dict[str, Any], body: str, set_code: str) -> str:
     """Produce the full Kotlin source for one card."""
     pkg = f"com.wingedsheep.mtg.sets.definitions.{set_code}.cards"
-    val_name = _pascal_case(card["name"])
+    val_name = pascal_case(card["name"])
 
     imports = _required_imports(body, has_rarity=card.get("rarity") is not None)
 
@@ -76,7 +76,8 @@ def render(card: dict[str, Any], body: str, set_code: str) -> str:
         lines.append(f'        artist = "{_escape(card["artist"])}"')
     if card.get("flavor_text"):
         lines.append(f'        flavorText = "{_escape(card["flavor_text"])}"')
-    image_uri = (card.get("image_uris") or {}).get("normal")
+    image_uris: dict[str, Any] = card.get("image_uris") or {}
+    image_uri: str | None = image_uris.get("normal")
     if image_uri:
         lines.append(f'        imageUri = "{_escape(image_uri)}"')
     lines.append("    }")
@@ -100,7 +101,7 @@ def _required_imports(body: str, *, has_rarity: bool) -> list[str]:
 
 
 def _color_identity(card: dict[str, Any]) -> str:
-    colors = card.get("color_identity") or []
+    colors: list[str] = card.get("color_identity") or []
     return "".join(colors)
 
 
@@ -122,7 +123,7 @@ def _try_int(value: Any) -> int | None:
         return None
 
 
-def _pascal_case(name: str) -> str:
+def pascal_case(name: str) -> str:
     out: list[str] = []
     cap_next = True
     for ch in name:
