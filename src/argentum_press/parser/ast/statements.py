@@ -263,3 +263,11 @@ class ManaSpendableStatement(Statement):
     """Marker for ``mana of any type can be spent to cast spells this way`` clause."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class DontStatement(Statement):
+    """``<subject>? do(es) not <statement>?`` — negated action by an optional subject."""
+
+    subject: Expression | None = None
+    statement: Statement | None = None
