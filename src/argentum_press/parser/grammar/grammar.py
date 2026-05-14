@@ -390,6 +390,7 @@ def getGrammar():
         uptoexpression: "up" "to" valueterm
         !thatmanyexpression: valuefrequency? "that" ("much"|"many")
         !numberofexpression: ("a"|"the"|"any") "number" "of" declarationorreference
+        | ("a"|"the"|"any") "number" "of" countertype "counter"["s"] "on" declarationorreference
         timesexpression: "times" statement? //[example: the number of times ~ was kicked]
         valueterm: valuenumber | valuecardinal | valueordinal | valuefrequency | valuecustom
         valuenumber: NUMBER
@@ -564,7 +565,7 @@ def getGrammar():
         returnexpression: playerdeclref? "return"["s"] declarationorreference atrandomexpression? ("from" zonedeclarationexpression)? "to" zonedeclarationexpression genericdeclarationexpression? zoneplacementmodifier?//[TODO]
 
         putinzoneexpression: playerdeclref? "put"["s"] (declarationorreference | cardexpression) (locationexpression | "back" | zoneplacementmodifier) (objectdefinition | playerdefinition | zoneplacementmodifier)?
-        putcounterexpression: playerdeclref? "put"["s"] ("a"|valueexpression) countertype "counter"["s"] "on" declarationorreference
+        putcounterexpression: playerdeclref? "put"["s"] ("a"["n"]|valueexpression) countertype "counter"["s"] "on" declarationorreference
         | playerdeclref? "put"["s"] possessiveterm countertype "counter"["s"] "on" declarationorreference
         removecounterexpression: playerdeclref? "remove"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference
         movecounterexpression: playerdeclref? "move"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference ("onto" | "to") declarationorreference
@@ -582,7 +583,7 @@ def getGrammar():
         gainabilityexpression: declarationorreference? "gain"["s"]  abilitysequencestatement
         | declarationorreference? "gain"["s"] "\\"" statementblock "\\"" "."? "\\""?
         loseabilityexpression: declarationorreference? "lose"["s"] abilitysequencestatement
-        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression)
+        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression) ("any" "time")?
         takeextraturnexpression: playerdeclref? "take"["s"] timeexpression
         flipcoinsexpression: playerdeclref? "flip"["s"] ("a" | valuecardinal) "coin"["s"]
         !winloseeventexpression: playerdeclref? ("lose"|"win")["s"] ("the" "flip" | "the" "game")?
@@ -883,9 +884,10 @@ def getGrammar():
         | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
 
         //[TODO: Not quite done, there are expressions like 'a number of cards equal to [...]'. There's some overlapping responsibilities with descriptions involving cards, maybe.]
-        !cardexpression: ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?  
+        !cardexpression: possessiveterm? ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? ("or" valueterm)? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?
 
         zonedeclarationexpression: (declarationdecorator* | referencedecorator*) zone
+        | "the" ("top" | "bottom") "of" zonedeclarationexpression -> topbottomofzonedecl
         zoneplacementmodifier: "in" "any" "order" -> anyorderplacement
         | "in" "a" "random" "order" -> randomorderplacement
         | ORDINAL "from" "the" "top" -> fromtopplacement

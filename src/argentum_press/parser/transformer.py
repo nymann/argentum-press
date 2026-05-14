@@ -47,6 +47,7 @@ from argentum_press.parser.ast import (
     AbsorbAbility,
     ActivationRestrictionStatement,
     ActivationStatement,
+    AddManaExpression,
     AddRemoveExpression,
     AffinityAbility,
     AfflictAbility,
@@ -134,6 +135,7 @@ from argentum_press.parser.ast import (
     ManaExpression,
     MayStatement,
     MayhemAbility,
+    MillExpression,
     MiracleAbility,
     ModalChoice,
     ModalExpression,
@@ -144,6 +146,7 @@ from argentum_press.parser.ast import (
     NamedExpression,
     NinjutsuAbility,
     NonExpression,
+    NumberOfExpression,
     NumberTypeEnum,
     NumberValue,
     OfferingAbility,
@@ -983,6 +986,16 @@ class CardTransformer(Transformer):
         inner_str = inner.value if isinstance(inner, NumberValue) else str(inner)
         return NumberValue(value=f"up to {inner_str}", ntype=NumberTypeEnum.CUSTOM)
 
+    def numberofexpression(self, items):
+        # `!numberofexpression: ("a"|"the"|"any") "number" "of" declarationorreference
+        #                     | ("a"|"the"|"any") "number" "of" countertype "counter"["s"]
+        #                       "on" declarationorreference`
+        # `!` keeps the literal tokens; the declarationorreference is the last
+        # non-Token item in either arm. Surface as NumberOfExpression so it
+        # slots into the valueexpression path.
+        non_token = [it for it in items if not isinstance(it, Token)]
+        return NumberOfExpression(expression=non_token[-1])
+
     def lteqexpression(self, items):
         # `lteqexpression: effectexpression? (valueexpression "or" ("less" | "fewer")
         #                  | "less" "than" "or" "equal" "to" valueexpression)`.
@@ -1610,6 +1623,11 @@ class CardTransformer(Transformer):
     def zonedeclarationexpression(self, items):
         return items[-1]
 
+    def topbottomofzonedecl(self, items):
+        # "the" ("top" | "bottom") "of" zonedeclarationexpression
+        # Literal "top"/"bottom" tokens are filtered; pass through the inner zone.
+        return items[-1]
+
     def zone(self, items):
         # ZONE token -> Name carrying the surface form.
         return Name(name=str(items[0]))
@@ -1802,6 +1820,11 @@ class CardTransformer(Transformer):
         subject = items[0] if items else Name(name="")
         return CastExpression(subject=subject)
 
+    def castwithoutpaying(self, items):
+        # "without" "paying" "its" "mana" "cost" — castexpression drops
+        # castmodifiers, so return a marker.
+        return Name(name="without-paying-mana-cost")
+
     def copyexpression(self, items):
         # playerdeclref? ("copy" | "copies" | "copied") declarationorreference
         # Surface-only stub mirroring castexpression: surface the
@@ -1817,6 +1840,12 @@ class CardTransformer(Transformer):
         card_expr = items[-1]
         quantity = _quantity_from_cardexpression(card_expr)
         return CardDrawExpression(quantity=quantity)
+
+    def millexpression(self, items):
+        # playerdeclref? "mill"["s"] cardexpression
+        card_expr = items[-1]
+        quantity = _quantity_from_cardexpression(card_expr)
+        return MillExpression(quantity=quantity)
 
     def cardexpression(self, items):
         # Carries through raw - drawexpression extracts the quantity.
@@ -1891,6 +1920,33 @@ class CardTransformer(Transformer):
 
     def manasymbolexpression(self, items):
         return ManaExpression(symbols=tuple(items))
+
+    def puremanaexpression(self, items):
+        return items[0]
+
+    def manadescriptionexpression(self, items):
+        return items[0]
+
+    def manadefinition(self, items):
+        return items[0]
+
+    def manadeclaration(self, items):
+        # declarationdecorator* manadefinition
+        modifiers = [it for it in items[:-1] if it is not None]
+        defn = items[-1]
+        if not modifiers:
+            return defn
+        return GenericDeclarationExpression(definition=_wrap_modifiers(defn, modifiers))
+
+    def manadeclref(self, items):
+        # manadeclaration | manareference
+        return items[0]
+
+    def addmanaexpression(self, items):
+        # playerdeclref? "add"["s"] manadeclref
+        if len(items) == 2:
+            return AddManaExpression(mana=items[1], player=items[0])
+        return AddManaExpression(mana=items[0])
 
     def manasymbol(self, items):
         return items[0]

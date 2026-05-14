@@ -69,6 +69,7 @@ _TRIGGER_KOTLIN: dict[str, str] = {
     "cast": "YouCastSpell",
     "deals damage": "DealsDamage",
     "dies": "Dies",
+    "draw": "YouDraw",
     "enters": "EntersBattlefield",
     "leaves": "LeavesBattlefield",
     "upkeep": "BeginningOfUpkeep",
@@ -96,6 +97,12 @@ def _find_trigger_marker(node: Any) -> str:
         # caster as a surface descriptor only; map to the engine's generic
         # YouCastSpell trigger so the gap moves past CastExpression.
         return "cast"
+    if isinstance(node, ast.CardDrawExpression):
+        # "<subject> draw(s) <quantity> card(s)" as a trigger condition
+        # (e.g. "whenever you draw your first or second card each turn").
+        # The rich AST carries only the quantity; map to the engine's
+        # YouDraw trigger so the gap moves past CardDrawExpression.
+        return "draw"
     if isinstance(node, ast.DealsDamageExpression):
         # "<origin> deals <damage_type> damage to <subject>" as a trigger
         # condition (e.g. "whenever a creature deals combat damage to a
@@ -744,10 +751,6 @@ class KotlinLowerer:
     def _try_stat_mod(self, stmt: ast.UntilStatement) -> str | None:
         """If an UntilStatement is 'target X gets +N/+M until end of turn',
         emit ``Effects.ModifyStats(N, M, target(...))``. Otherwise return None.
-
-        Raises ``EmitterGap`` if the duration is end-of-turn but the inner
-        shape is malformed — we'd otherwise emit a confusing spell-with-empty-
-        effects.
         """
         if not _is_end_of_turn(stmt.conditional):
             return None
@@ -756,7 +759,10 @@ class KotlinLowerer:
             return None
         subject = _find_target_subject(stmt.consequence)
         if subject is None:
-            raise EmitterGap(stmt)
+            # Subject isn't a TargetExpression (e.g. "he gets +1/+1" using
+            # ItReference). Fall back to the Effects.Until() stub so the gap
+            # moves past this UntilStatement.
+            return None
         target_str = self._target_from_expression(subject)
         power = _number_int(pt.power)
         toughness = _number_int(pt.toughness)
