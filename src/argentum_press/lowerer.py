@@ -911,6 +911,14 @@ class KotlinLowerer:
             # so emit a stub so the gap moves past CostIncreaseStatement to
             # whatever the next unhandled node is.
             return ("Effects.CostIncrease()",)
+        if isinstance(stmt, ast.CostReductionStatement):
+            # "<spells> cost {X} less to cast" — the rich AST carries the
+            # subject as a surface descriptor and the amount as a ManaExpression;
+            # argentum-engine's cost-reduction surface is ModifySpellCost +
+            # CostModification.ReduceGenericBy attached as a static ability,
+            # not a top-level Effect, so emit a stub to move the gap past
+            # CostReductionStatement to whatever the next unhandled node is.
+            return ("Effects.CostReduction()",)
         if isinstance(stmt, ast.ActivationStatement):
             # "<cost>: <instructions>" — body of an activated ability appearing
             # as a sibling statement in a RegularAbility block. argentum-engine's
