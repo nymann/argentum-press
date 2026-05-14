@@ -1532,12 +1532,22 @@ def _run_replay(
 SUPERVISOR_STATE_PATH = Path("/tmp/argentum-press-supervisor-state.json")
 
 # Iteration outcomes (runs.tsv `outcome` column) that the supervisor offers
-# to repair. `abort_no_progress` is deliberately excluded — it's a
-# structural "I'm stuck, no code fix will help" signal, not a code bug.
+# to repair via the LLM. `abort_no_progress` is handled separately
+# (relaunch-only, no LLM) — empirically a fresh process often unsticks
+# the loop without a code change.
 _SUPERVISE_OUTCOMES: frozenset[str] = frozenset({
     "abort_subprocess",  # gap subprocess crashed with non-zero rc
     "abort_pytest",      # freeform agent's fix broke the test suite
     "claude_error",      # claude -p itself failed
+})
+
+# Outcomes that the supervisor unsticks by simply re-executing the same
+# argv in a fresh interpreter — no Claude call. Cheap, bounded by the
+# same-fingerprint-twice + total-recovery budget. Use for failure modes
+# where the empirically-observed fix is "just try again" rather than
+# "fix some code".
+_SUPERVISE_RELAUNCH_ONLY: frozenset[str] = frozenset({
+    "abort_no_progress",
 })
 
 # Playbook abort tags that warrant a repair pass. Most playbook aborts mean
@@ -1743,10 +1753,16 @@ def _supervisor_dispatch(
     exception_info: tuple[type, BaseException, Any] | None,
     runs_row: dict[str, str] | None,
     record_dir: Path | None,
+    relaunch_only: bool = False,
     max_total_recoveries: int = 5,
 ) -> bool:
     """Run one repair cycle. Returns True iff the caller should os.execv
     back into a fresh interpreter; False to bail with the original rc.
+
+    ``relaunch_only`` skips the Claude call + pytest gate — used for
+    failure modes (currently just abort_no_progress) where empirically
+    a fresh process is the right intervention and there's nothing for
+    the LLM to fix.
     """
     state = _supervisor_load_state()
     if state["last_fingerprint"] == fingerprint and state["consecutive_same"] >= 1:
@@ -1764,39 +1780,46 @@ def _supervisor_dispatch(
         _supervisor_clear_state()
         return False
 
-    context = _supervisor_collect_context(
-        failure_kind=failure_kind,
-        fingerprint=fingerprint,
-        argv=argv,
-        exception_info=exception_info,
-        runs_row=runs_row,
-        record_dir=record_dir,
-    )
-    context_path = REPO / ".supervisor-context.json"
-    context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
-    stamp(
-        f"{BOLD}[supervisor] dispatching repair: "
-        f"kind={failure_kind} fingerprint={fingerprint} "
-        f"recoveries={state['total_recoveries']}/{max_total_recoveries}{RESET}"
-    )
-
-    rc = _supervisor_run_repair(context_path)
-    if rc != 0:
-        stamp(f"{RED}[supervisor] claude exited rc={rc}; not relaunching.{RESET}")
-        _supervisor_clear_state()
-        return False
-
-    # Pytest gate before re-launch.
-    stamp(f"{BOLD}[supervisor] pytest-gating the repair...{RESET}")
-    pytest_rc, _ = run_pytest(REPO)
-    if pytest_rc != 0:
+    if relaunch_only:
         stamp(
-            f"{RED}[supervisor] pytest red after repair "
-            f"(rc={pytest_rc}); not relaunching.{RESET}"
+            f"{BOLD}[supervisor] relaunch-only recovery: "
+            f"kind={failure_kind} fingerprint={fingerprint} "
+            f"recoveries={state['total_recoveries']}/{max_total_recoveries}{RESET}"
         )
-        _supervisor_clear_state()
-        return False
-    stamp(f"{GREEN}[supervisor] pytest green; relaunching orchestrator.{RESET}")
+    else:
+        context = _supervisor_collect_context(
+            failure_kind=failure_kind,
+            fingerprint=fingerprint,
+            argv=argv,
+            exception_info=exception_info,
+            runs_row=runs_row,
+            record_dir=record_dir,
+        )
+        context_path = REPO / ".supervisor-context.json"
+        context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
+        stamp(
+            f"{BOLD}[supervisor] dispatching repair: "
+            f"kind={failure_kind} fingerprint={fingerprint} "
+            f"recoveries={state['total_recoveries']}/{max_total_recoveries}{RESET}"
+        )
+
+        rc = _supervisor_run_repair(context_path)
+        if rc != 0:
+            stamp(f"{RED}[supervisor] claude exited rc={rc}; not relaunching.{RESET}")
+            _supervisor_clear_state()
+            return False
+
+        # Pytest gate before re-launch.
+        stamp(f"{BOLD}[supervisor] pytest-gating the repair...{RESET}")
+        pytest_rc, _ = run_pytest(REPO)
+        if pytest_rc != 0:
+            stamp(
+                f"{RED}[supervisor] pytest red after repair "
+                f"(rc={pytest_rc}); not relaunching.{RESET}"
+            )
+            _supervisor_clear_state()
+            return False
+        stamp(f"{GREEN}[supervisor] pytest green; relaunching orchestrator.{RESET}")
 
     # Bump and persist.
     if state["last_fingerprint"] == fingerprint:
@@ -1809,6 +1832,7 @@ def _supervisor_dispatch(
         "fingerprint": fingerprint,
         "kind": failure_kind,
         "outcome_tag": (runs_row or {}).get("outcome"),
+        "relaunch_only": relaunch_only,
     })
     _supervisor_save_state(state)
     return True
@@ -2017,7 +2041,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         strategy = freeform
 
-    prev_label = ""
+    # (label, card_name) tuple — lower gaps have the same `label` (an AST
+    # class name) for many cards, so just matching on `label` fires as a
+    # false positive when the LLM's previous fix handled one card's variant
+    # of a class but a later card hits a different variant of the same
+    # class. Pairing with card_name distinguishes "fix didn't work on this
+    # exact card" (real no-progress) from "fix worked here, a different
+    # card surfaces the same class with a different shape" (progress).
+    prev_signature: tuple[str, str] = ("", "")
     i = 0
     while True:
         i += 1
@@ -2046,8 +2077,12 @@ def main(argv: list[str] | None = None) -> int:
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
-        if gap.label == prev_label:
-            stamp(f"{RED}no progress: label '{gap.label}' twice in a row. abort.{RESET}")
+        signature = (gap.label, gap.card_name)
+        if signature == prev_signature:
+            stamp(
+                f"{RED}no progress: same (label, card) twice in a row "
+                f"({gap.card_name}, {gap.label}). abort.{RESET}"
+            )
             if recorder and rec:
                 rec.gap_kind = gap.kind
                 rec.gap_label = gap.label
@@ -2136,7 +2171,7 @@ def main(argv: list[str] | None = None) -> int:
             rec.description = _desc()
             recorder.finish_iteration(rec)
 
-        prev_label = gap.label
+        prev_signature = signature
 
         # Wipe playbook conversation state between iterations so each gap
         # starts fresh. The subprocess stays alive — only the in-flight
@@ -2212,7 +2247,11 @@ def _entry_with_supervision() -> int:
         last = _supervisor_last_outcome(record_dir)
         if last is not None:
             tag, row = last
-            if tag in _SUPERVISE_OUTCOMES or tag in _SUPERVISE_PLAYBOOK_TAGS:
+            if (
+                tag in _SUPERVISE_OUTCOMES
+                or tag in _SUPERVISE_PLAYBOOK_TAGS
+                or tag in _SUPERVISE_RELAUNCH_ONLY
+            ):
                 failure_kind = "abort"
                 fingerprint = _supervisor_fingerprint(
                     kind="abort",
@@ -2222,10 +2261,13 @@ def _entry_with_supervision() -> int:
                 runs_row = row
 
     if failure_kind is None or fingerprint is None:
-        # Either a structural abort (abort_no_progress) we don't supervise,
-        # or some other non-recoverable rc. Pass through.
+        # Some other non-recoverable rc — pass through.
         return rc
 
+    relaunch_only = (
+        runs_row is not None
+        and runs_row.get("outcome") in _SUPERVISE_RELAUNCH_ONLY
+    )
     should_relaunch = _supervisor_dispatch(
         argv=argv,
         failure_kind=failure_kind,
@@ -2233,6 +2275,7 @@ def _entry_with_supervision() -> int:
         exception_info=exception_info,
         runs_row=runs_row,
         record_dir=record_dir,
+        relaunch_only=relaunch_only,
     )
     if not should_relaunch:
         return rc
