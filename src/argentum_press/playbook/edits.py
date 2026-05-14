@@ -125,6 +125,30 @@ def _parse_function_def(source: str) -> cst.FunctionDef:
     return fn
 
 
+def _collect_singledispatch_names(module: cst.Module) -> set[str]:
+    """Names of methods in KotlinLowerer decorated with @singledispatchmethod.
+
+    The L5b/L9 LLM has hallucinated dispatcher names before (`value`,
+    `value_expression`) that look plausible from the AST class name but
+    don't exist in the class — the resulting `@<name>.register` decorator
+    parses fine but `NameError`s at import. Validating here makes that
+    surface as a clean L6/L10 abort instead of a poisoned pytest run.
+    """
+    names: set[str] = set()
+    for stmt in module.body:
+        if not isinstance(stmt, cst.ClassDef) or stmt.name.value != "KotlinLowerer":
+            continue
+        for member in stmt.body.body:
+            if not isinstance(member, cst.FunctionDef):
+                continue
+            for dec in member.decorators:
+                d = dec.decorator
+                if isinstance(d, cst.Name) and d.value == "singledispatchmethod":
+                    names.add(member.name.value)
+                    break
+    return names
+
+
 def _insert_register_handler(
     module: cst.Module, dispatcher: str, body_python: str
 ) -> cst.Module:
@@ -135,6 +159,14 @@ def _insert_register_handler(
     @singledispatchmethod registration is order-independent. Appending at the
     tail keeps the libcst transform trivial and merge-friendly.
     """
+    valid = _collect_singledispatch_names(module)
+    if valid and dispatcher not in valid:
+        raise AnchorNotFoundError(
+            f"register-handler dispatcher {dispatcher!r} is not a "
+            f"@singledispatchmethod on KotlinLowerer; "
+            f"valid: {sorted(valid)}"
+        )
+
     new_fn = _parse_function_def(body_python)
 
     class _Inserter(cst.CSTTransformer):
