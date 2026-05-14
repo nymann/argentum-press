@@ -546,6 +546,7 @@ def getGrammar():
         | declarationorreference? "deal"["s"] DAMAGETYPE valueexpression ("to" declarationorreference)? (","? quantityrulemodification)*
         | valueexpression DAMAGETYPE ("to" declarationorreference)?  (","? quantityrulemodification)*
         | DAMAGETYPE "would" "be" "dealt" "to" declarationorreference timeexpression?
+        | "all" DAMAGETYPE "that" "would" "be" "dealt" "to" declarationorreference "is" "dealt" "to" declarationorreference -> redirectalldamageexpression
         preventdamageexpression: "prevent" "the" "next" valueexpression DAMAGETYPE "that" "would" "be" "dealt" "to" declarationorreference timeexpression? -> preventdamagevarianta
         | "prevent" "the" "next" valueexpression DAMAGETYPE "that" declarationorreference "would" "deal" "to" declarationorreference timeexpression? -> preventdamagevariantb
         | "prevent" "all" DAMAGETYPE "that" "would" "be" "dealt" ("to" declarationorreference)? timeexpression? -> preventdamagevariantc
