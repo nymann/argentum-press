@@ -156,17 +156,20 @@ def _trigger_kotlin_name(condition: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _number_int(node: Any) -> int:
+def _number_int(node: Any) -> int | str:
     """Extract a plain int from a NumberValue literal.
 
-    Falls back to ``EmitterGap`` on word numbers, ``"X"``, or any other
-    non-int NumberValue shape — argentum-engine's Effects.* primitives
-    take ints.
+    Falls back to ``EmitterGap`` on word numbers or any other non-int
+    NumberValue shape. CUSTOM tokens (``"X"``, ``"*"``, ``"1+*"``) pass
+    through as the raw string — argentum-engine has no surface for them
+    yet, so callers emit a stub that interpolates the token directly.
     """
     if not isinstance(node, ast.NumberValue):
         raise EmitterGap(node)
     value = node.value
     if isinstance(value, int):
+        return value
+    if isinstance(value, str) and node.ntype is ast.NumberTypeEnum.CUSTOM:
         return value
     raise EmitterGap(node)
 

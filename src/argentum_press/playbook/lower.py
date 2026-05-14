@@ -29,11 +29,20 @@ PYTEST_TARGETS = (
 )
 
 
-L3_MODEL = "claude-haiku-4-5-20251001"
-# Opus 4.7 is the current high-capability model in the Claude 4.7 family;
-# fall back to opus-4-5 if a deployment doesn't yet expose 4.7.
-L4_MODEL = "claude-opus-4-7"
-L5_MODEL = "claude-opus-4-7"
+# L3 runs on a local MLX-hosted Qwen3-Coder-Next-4bit (non-thinking
+# variant — the thinking flavours break structured JSON output). The
+# summary is small + bounded; local is free and avoids the rate-limit
+# envelope. The MLX server is the OpenAI-compatible llm router on
+# http://localhost:8080. Model names containing "/" route there
+# automatically (see llm._is_local_model).
+L3_MODEL = "mlx-community/Qwen3-Coder-Next-4bit"
+
+# Sonnet 4.6 for the structured-code-emission and picker steps (L4 / L5)
+# and their cross-playbook aliases (P3 picker, U3/U4 code emission). Opus
+# is reserved for "new grammar" (P4) and retries-on-pytest-red (L9 / P8 /
+# U8) where the reasoning lift earns the cost.
+L4_MODEL = "claude-sonnet-4-6"
+L5_MODEL = "claude-sonnet-4-6"
 L9_MODEL = "claude-opus-4-7"
 
 
@@ -160,12 +169,25 @@ def _call(
     pool: _driver_mod.DriverPool | None,
     client: llm.ClientLike | None,
 ) -> llm.ToolCallResult:
-    """Route to CLI driver or SDK based on which transport was provided.
+    """Route to CLI driver, SDK, or local OpenAI server based on transport.
 
     Tests pass ``client=`` (FakeClient with SDK shape) and exercise the
     SDK path. Production passes ``pool=`` and exercises the long-lived
     ``claude`` subprocess. Exactly one must be set.
+
+    A ``model`` name containing ``/`` (e.g. ``mlx-community/Qwen3-...``)
+    routes to the local OpenAI-compatible server instead of either
+    Anthropic transport — used for the cheap L3 cached-summary step.
     """
+    if llm._is_local_model(model):
+        return llm.call_tool_via_local_openai(
+            tool_name=tool_name,
+            system_prompt=system_prompt,
+            static_context_blocks=static_context_blocks,
+            user_prompt=user_prompt,
+            model=model,
+            max_tokens=max_tokens,
+        )
     if pool is not None:
         return llm.call_tool_via_cli(
             tool_name=tool_name,

@@ -28,9 +28,13 @@ from . import PlaybookResult, context, driver as _driver_mod, edits, llm, log_st
 from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _call, _short, run_pytest
 
 
-P3_MODEL = L4_MODEL
-P4_MODEL = L5_MODEL
-P8_MODEL = L9_MODEL
+P3_MODEL = L4_MODEL              # parent-rule picker — sonnet via L4 alias
+# P4 emits the actual new Lark grammar alternative — the only "new
+# grammar" call across the three playbooks, so it stays on opus even
+# though L5 (the lower playbook's plan-body step) has been downgraded
+# to sonnet.
+P4_MODEL = "claude-opus-4-7"
+P8_MODEL = L9_MODEL              # retry/diagnose — opus via L9 alias
 
 
 def _resolve_models(override: str | None) -> tuple[str, str, str]:

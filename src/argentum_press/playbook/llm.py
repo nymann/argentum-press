@@ -464,6 +464,127 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Local OpenAI-compatible route (MLX server on localhost:8080)
+# ---------------------------------------------------------------------------
+
+
+# Model names that route to the local OpenAI-compatible server instead of the
+# Anthropic API. The MLX server exposes its models with a `mlx-community/`
+# prefix, so the namespace is naturally non-Anthropic.
+LOCAL_OPENAI_URL = "http://localhost:8080/v1/chat/completions"
+LOCAL_MODEL_TIMEOUT_S = 60.0
+
+
+def _is_local_model(model: str) -> bool:
+    """True for model names handled by the local OpenAI-compatible server.
+
+    The heuristic is `contains "/"` — Anthropic model IDs are flat
+    (`claude-opus-4-7`), while OpenAI-compatible servers use a
+    `vendor/model-name` namespace. Cheap to check and unambiguous against
+    every Claude model we use.
+    """
+    return "/" in model
+
+
+def call_tool_via_local_openai(
+    *,
+    tool_name: str,
+    system_prompt: str,
+    static_context_blocks: list[dict[str, Any]],
+    user_prompt: str,
+    model: str,
+    max_tokens: int = 2048,
+    url: str = LOCAL_OPENAI_URL,
+    timeout_s: float = LOCAL_MODEL_TIMEOUT_S,
+) -> ToolCallResult:
+    """OpenAI-compatible route for a local MLX server.
+
+    Designed for the L3 cached-summary call where the output is small,
+    bounded, and the API cost saving (running on-box) is the explicit
+    point. Builds one chat completion request, asks for JSON output,
+    validates against the same :data:`TOOL_SCHEMAS` schema as the
+    Anthropic routes, returns the same :class:`ToolCallResult` shape so
+    the playbook driver doesn't branch on transport.
+
+    Loses two things relative to the Anthropic SDK path:
+
+    * **No ``tool_use`` forcing.** OpenAI-compatible function calling
+      varies by server; we use ``response_format={"type": "json_object"}``
+      where supported and lean on the prompt to enforce the schema. The
+      jsonschema validation step is unchanged.
+    * **No ``cache_control`` markers.** Local inference has its own
+      key-value cache reuse semantics; the explicit Anthropic markers are
+      a no-op here. For L3 (always a cache-miss caller, since it's the
+      first call in the playbook iteration) this costs nothing.
+    """
+    import urllib.error
+    import urllib.request
+
+    schema = TOOL_SCHEMAS[tool_name]
+    static_text_parts: list[str] = []
+    for block in static_context_blocks:
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str) and text:
+            static_text_parts.append(text)
+
+    schema_str = json.dumps(schema, indent=2)
+    user_message = (
+        ("\n\n---\n\n".join(static_text_parts) + "\n\n---\n\n" if static_text_parts else "")
+        + f"{user_prompt}\n\n"
+        f"Respond with EXACTLY one JSON object matching this schema. "
+        f"Do not include any prose outside the JSON. Do not wrap in code fences.\n\n"
+        f"SCHEMA (tool_name={tool_name}):\n\n{schema_str}\n"
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+        "temperature": 0.0,  # deterministic for the structured-output use case
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"playbook: local OpenAI route failed ({url}): {e}; "
+            f"is the MLX server running on {url}?"
+        ) from e
+
+    try:
+        text = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise ValueError(
+            f"playbook: local response missing choices[0].message.content: {body!r}"
+        ) from e
+
+    args = _extract_json_object(text)
+    try:
+        jsonschema.validate(args, schema)
+    except jsonschema.ValidationError as e:
+        raise ValueError(
+            f"playbook: local {tool_name} args failed schema: {e.message}; got {args!r}"
+        ) from e
+
+    return ToolCallResult(tool_name=tool_name, arguments=args, raw_response=body)
+
+
+# ---------------------------------------------------------------------------
+# CLI-backed variant: routes through ``claude -p`` instead of the SDK.
+# ---------------------------------------------------------------------------
+
+
 def call_tool_via_cli(
     *,
     tool_name: str,

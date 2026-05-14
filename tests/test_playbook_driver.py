@@ -288,3 +288,137 @@ def test_extract_json_object_balanced_fallback() -> None:
 def test_extract_json_object_raises_when_no_json() -> None:
     with pytest.raises(ValueError, match="could not extract JSON"):
         llm._extract_json_object("no json here at all")
+
+
+# ---------------------------------------------------------------------------
+# Local OpenAI-compatible route (MLX server)
+# ---------------------------------------------------------------------------
+
+
+def test_is_local_model_detects_slash_namespace() -> None:
+    assert llm._is_local_model("mlx-community/Qwen3-Coder-Next-4bit")
+    assert llm._is_local_model("foo/bar")
+    assert not llm._is_local_model("claude-opus-4-7")
+    assert not llm._is_local_model("claude-sonnet-4-6")
+    assert not llm._is_local_model("claude-haiku-4-5-20251001")
+
+
+def _fake_urlopen_factory(
+    payload_text: str,
+    captured: dict[str, Any] | None = None,
+) -> Any:
+    """Build a stand-in for `urllib.request.urlopen` returning ``payload_text``
+    as the chat-completion content. Captures the request body into
+    ``captured`` so tests can assert what the route sent."""
+    import io
+
+    body = {
+        "choices": [
+            {"message": {"role": "assistant", "content": payload_text}}
+        ]
+    }
+    encoded = json.dumps(body).encode("utf-8")
+
+    class _Resp:
+        def __init__(self) -> None:
+            self._buf = io.BytesIO(encoded)
+        def __enter__(self) -> "_Resp": return self
+        def __exit__(self, *_: Any) -> None: pass
+        def read(self) -> bytes: return self._buf.getvalue()
+
+    def fake_urlopen(req: Any, timeout: float | None = None) -> Any:
+        if captured is not None:
+            try:
+                captured["url"] = req.full_url
+                captured["body"] = json.loads(req.data.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        return _Resp()
+
+    return fake_urlopen
+
+
+def test_call_tool_via_local_openai_parses_bare_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _summary_payload()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _fake_urlopen_factory(json.dumps(payload), captured),
+    )
+    result = llm.call_tool_via_local_openai(
+        tool_name="emit_ast_summary",
+        system_prompt="sys",
+        static_context_blocks=[{"type": "text", "text": "ctx"}],
+        user_prompt="summarise",
+        model="mlx-community/Qwen3-Coder-Next-4bit",
+    )
+    assert result.arguments == payload
+    assert captured["body"]["model"] == "mlx-community/Qwen3-Coder-Next-4bit"
+    # JSON-mode is requested so capable servers enforce structured output.
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+    # System prompt + user prompt assembled correctly.
+    assert captured["body"]["messages"][0]["role"] == "system"
+    assert captured["body"]["messages"][0]["content"] == "sys"
+    assert captured["body"]["messages"][1]["role"] == "user"
+    assert "ctx" in captured["body"]["messages"][1]["content"]
+    assert "summarise" in captured["body"]["messages"][1]["content"]
+
+
+def test_call_tool_via_local_openai_parses_fenced_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Qwen sometimes wraps JSON in ```json fences despite the prompt;
+    the extractor handles that just like the CLI route does."""
+    payload = _summary_payload()
+    fenced = "```json\n" + json.dumps(payload) + "\n```"
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _fake_urlopen_factory(fenced),
+    )
+    result = llm.call_tool_via_local_openai(
+        tool_name="emit_ast_summary",
+        system_prompt="sys",
+        static_context_blocks=[],
+        user_prompt="summarise",
+        model="mlx-community/Qwen3-Coder-Next-4bit",
+    )
+    assert result.arguments == payload
+
+
+def test_call_tool_via_local_openai_rejects_schema_violations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = {"summary": "missing fields"}
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        _fake_urlopen_factory(json.dumps(bad)),
+    )
+    with pytest.raises(ValueError, match="failed schema"):
+        llm.call_tool_via_local_openai(
+            tool_name="emit_ast_summary",
+            system_prompt="sys",
+            static_context_blocks=[],
+            user_prompt="summarise",
+            model="mlx-community/Qwen3-Coder-Next-4bit",
+        )
+
+
+def test_call_tool_via_local_openai_surfaces_url_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    def fake_urlopen(*_a: Any, **_kw: Any) -> Any:
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="local OpenAI route failed"):
+        llm.call_tool_via_local_openai(
+            tool_name="emit_ast_summary",
+            system_prompt="sys",
+            static_context_blocks=[],
+            user_prompt="summarise",
+            model="mlx-community/Qwen3-Coder-Next-4bit",
+        )
