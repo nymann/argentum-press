@@ -1251,6 +1251,12 @@ class CardTransformer(Transformer):
         # the characteristic carries downstream meaning.
         return items[-1]
 
+    def characteristicandexpr(self, items):
+        result = items[0]
+        for item in items[1:]:
+            result = AndExpression(lhs=result, rhs=item)
+        return result
+
     def characteristic(self, items):
         # OBJECTCHARACTERISTIC | PLAYERCHARACTERISTIC token — pass through
         # as an opaque Name (same shape as modifier/qualifier).
