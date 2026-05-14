@@ -1330,6 +1330,13 @@ class CardTransformer(Transformer):
             return BeingStatement(rhs=items[0])
         return BeingStatement(lhs=items[0], rhs=items[1])
 
+    def hasquotedstatement(self, items):
+        # `<subject>? has "<statementblock>"` -> BeingStatement with the granted
+        # ability body as RHS (e.g. Enchanted land has "{1}, {T}: ...").
+        if len(items) == 1:
+            return BeingStatement(rhs=items[0])
+        return BeingStatement(lhs=items[0], rhs=items[1])
+
     def isstatement(self, items):
         # `<subject> is/was/are [each] [still|not] <rhs>` -> BeingStatement.
         # The grammar tags this rule with `!`, so the is/was/are/each/still/not
