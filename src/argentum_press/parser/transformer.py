@@ -182,6 +182,7 @@ from argentum_press.parser.ast import (
     UncastExpression,
     UnearthAbility,
     UntilStatement,
+    ValueLtEqExpression,
     VanishingAbility,
     WardAbility,
     WebSlingingAbility,
@@ -965,6 +966,15 @@ class CardTransformer(Transformer):
         inner = items[0]
         inner_str = inner.value if isinstance(inner, NumberValue) else str(inner)
         return NumberValue(value=f"up to {inner_str}", ntype=NumberTypeEnum.CUSTOM)
+
+    def lteqexpression(self, items):
+        # `lteqexpression: effectexpression? (valueexpression "or" ("less" | "fewer")
+        #                  | "less" "than" "or" "equal" "to" valueexpression)`.
+        # Anonymous string terminals are filtered, so both arms produce the
+        # same item shape: [valueexpression] or [effectexpression, valueexpression].
+        if len(items) == 1:
+            return ValueLtEqExpression(lhs=None, rhs=items[0])
+        return ValueLtEqExpression(lhs=items[0], rhs=items[1])
 
     def valuecustom(self, items):
         # "x" or "*" - empty items because the grammar matches a literal.
