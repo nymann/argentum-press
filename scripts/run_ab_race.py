@@ -59,31 +59,42 @@ def _seed_cache(worktree: Path, cache_source: Path) -> int:
     return sum(1 for _ in dest.rglob("*") if _.is_file())
 
 
-def _harvest_cache(src: Path, dest: Path) -> int:
-    """Copy files from ``src`` into ``dest``, leaving existing destination
-    files untouched.
+def _harvest_cache(src: Path, dest: Path) -> tuple[int, int]:
+    """Copy files from ``src`` into ``dest``, overwriting on collision.
 
-    The parse cache is sharded under two-char prefix dirs (``ab/cdef.json``);
-    each file is independently keyed by the sha256 of (card name, oracle
-    text). Multiple worktrees can add new entries to the shared cache without
-    clobbering each other — same key always means same parse result, so
-    no overwrite is needed. Returns the count of new files copied.
+    Returns ``(new, updated)``: new files copied + existing files replaced.
+
+    The parse cache key is sha256(card_name + oracle_text). Same key means
+    same input — but the *value* (ParseResult) drifts as the parser evolves:
+    a card that previously errored with parse-error:foo will, after a
+    grammar fix, parse cleanly with a different stored result.
+
+    ``invalidate_label`` keeps the cache consistent for the cache that the
+    *running* fix-loop is pointed at. The race runs with
+    ``ARGENTUM_PARSE_CACHE_DIR=<worktree>/.parse-cache``, so all invalidations
+    land in the worktree's cache; the shared home cache keeps any pre-race
+    stale entries indefinitely. When we harvest back, the worktree's entry
+    is post-fix and authoritative — overwriting actively corrects the home
+    cache instead of leaving stale parse-errors that the next race would
+    re-surface as ghost gaps.
     """
     if not src.is_dir():
-        return 0
+        return 0, 0
     dest.mkdir(parents=True, exist_ok=True)
-    n = 0
+    new = 0
+    updated = 0
     for src_file in src.rglob("*"):
         if not src_file.is_file():
             continue
         rel = src_file.relative_to(src)
         target = dest / rel
         if target.exists():
-            continue
+            updated += 1
+        else:
+            new += 1
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src_file, target)
-        n += 1
-    return n
+    return new, updated
 
 
 def _branch_exists(branch: str) -> bool:
@@ -248,9 +259,12 @@ def main(argv: list[str] | None = None) -> int:
     for branch, _mode in plan:
         path = args.worktree_base / branch
         if path.exists():
-            harvested = _harvest_cache(path / ".parse-cache", cache_source)
-            if harvested:
-                print(f"  {path}: harvested {harvested} cache files into {cache_source}")
+            new, updated = _harvest_cache(path / ".parse-cache", cache_source)
+            if new or updated:
+                print(
+                    f"  {path}: harvested {new} new + {updated} updated cache files "
+                    f"into {cache_source}"
+                )
         if _branch_exists(branch):
             ahead = _commits_ahead(branch)
             if ahead > 0:
