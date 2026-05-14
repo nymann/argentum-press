@@ -940,7 +940,7 @@ class KotlinLowerer:
             # inverted flag are threaded through a thin Effects.conditional wrapper
             # since argentum-engine has no single DSL surface for a generic
             # when/if construct.
-            inner = _effects_from_statement(stmt.consequence)
+            inner = self._effects_from_statement(stmt.consequence)
             return [f"Effects.conditional({inner!r}, inverted={stmt.inverted})"]
         raise EmitterGap(stmt)
 
