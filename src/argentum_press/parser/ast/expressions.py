@@ -661,3 +661,11 @@ class EqualToExpression(ValueComparisonExpression):
 
     effect: EffectExpression | None = None
     value: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PayExpression(EffectExpression):
+    """``<player>? pay(s) <cost>`` — a player pays a cost (mana, life, or other declaration)."""
+
+    player: Expression | None = None
+    cost: Expression | None = None
