@@ -409,6 +409,7 @@ def getGrammar():
         | declarationorreference ("," declarationorreference ",")* "or" declarationorreference -> orgenericdeclarationexpression
         | declarationorreference ("," declarationorreference ",")* "and" declarationorreference -> andgenericdeclarationexpression
         | declarationorreference ("," declarationorreference ",")* "and/or" declarationorreference -> andorgenericdeclarationexpression
+        | "each" "of" declarationorreference -> eachofgenericdeclarationexpression
 
         genericdescriptionexpression: objectdescriptionexpression | playerdescriptionexpression
 
