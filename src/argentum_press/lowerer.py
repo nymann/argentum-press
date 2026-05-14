@@ -753,6 +753,12 @@ class KotlinLowerer:
             # generate it (see the ActivatedAbility @ability handler, which
             # also gaps). Emit a stub so the gap moves past ActivationStatement.
             return ("Effects.Activate()",)
+        if isinstance(stmt, ast.BeingStatement):
+            # "<X> is/has/can't <Y>" — grants an ability or state predicate
+            # to the LHS (e.g. "enchanted land has '...'"). argentum-engine
+            # has no top-level grant-ability Effect surface yet; emit a stub
+            # so the gap moves past BeingStatement.
+            return ("Effects.Being()",)
         if isinstance(stmt, ast.ModalExpression):
             # "choose one — • <option1> • <option2>" — the rich AST carries
             # each modal option as a ModalChoice with its own block, and the
