@@ -129,7 +129,9 @@ def test_dry_run_default_variant_smoke(
     monkeypatch.setenv("ARGENTUM_PARSE_CACHE_DIR", str(tmp_path / "pcache"))
 
     def fake_find(set_code: str, project_dir: Path, *,
-                  scan_jsonl_path: Path | None = None) -> tuple:
+                  scan_jsonl_path: Path | None = None,
+                  skip_cards: set[str] | None = None,
+                  only_cards: set[str] | None = None) -> tuple:
         from argentum_press.diagnose import Gap
         return (
             Gap(

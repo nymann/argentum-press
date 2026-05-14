@@ -1069,6 +1069,7 @@ def _find_gap_subprocess(
     *,
     scan_jsonl_path: Path | None = None,
     skip_cards: set[str] | None = None,
+    only_cards: set[str] | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Run gap-finding in a fresh subprocess so the agent's last edits take
     effect. Returns ``(gap, ast_text, parse_error_block)`` — ``gap`` is None
@@ -1092,16 +1093,20 @@ def _find_gap_subprocess(
 
     ``skip_cards`` is piped to the worker as ``{"skip_cards": [...]}`` on
     stdin so the next scan surfaces a different card — the capture-batch
-    hook. None / empty means "no skip set" and the worker walks from the
-    top.
+    hook. ``only_cards`` is the symmetric --card-A/B hook (restrict the scan
+    to listed names). Both can be set; their composition is intersection
+    (skip wins over only). None / empty means "no filter".
     """
     cmd = [
         "uv", "run", "python", "-m", "argentum_press._fix_loop_gap",
         set_code, str(project_dir),
     ]
-    stdin_payload = (
-        json.dumps({"skip_cards": sorted(skip_cards)}) if skip_cards else ""
-    )
+    payload: dict[str, Any] = {}
+    if skip_cards:
+        payload["skip_cards"] = sorted(skip_cards)
+    if only_cards is not None:
+        payload["only_cards"] = sorted(only_cards)
+    stdin_payload = json.dumps(payload) if payload else ""
     proc = subprocess.Popen(
         cmd,
         cwd=REPO,
@@ -1535,6 +1540,19 @@ def main(argv: list[str] | None = None) -> int:
              "use this to keep wall-clock noise down when the agent is a no-op "
              "shim; production runs leave it off.",
     )
+    ap.add_argument(
+        "--card", type=str, default=None,
+        help="Restrict the scan to a single card by name (the exact Scryfall "
+             "card name, e.g. 'Spider-UK'). Lets you A/B different fix paths "
+             "against the same gap on two branches.",
+    )
+    ap.add_argument(
+        "--mode", choices=("freeform", "playbook"), default="freeform",
+        help="freeform = freeform claude -p loop (default, unchanged). "
+             "playbook = structured DAG of LLM + libcst steps (lower-gaps only). "
+             "playbook mode aborts the iteration if the gap is parse-error or "
+             "unmodeled-rule, since those playbooks aren't built yet.",
+    )
     args = ap.parse_args(argv)
 
     if args.capture_gap is not None and args.capture_batch is not None:
@@ -1581,11 +1599,13 @@ def main(argv: list[str] | None = None) -> int:
     recorder = Recorder(args.record) if args.record else None
 
     def _desc() -> str:
-        # Prepend the variant tag to the user-supplied description so a
+        # Prepend mode + variant tags to the user-supplied description so a
         # runs.tsv row's description column tells the full story (a tag
-        # like 'variant=h1-no-handler-map|seed-42' is greppable; the
-        # bare user description without it isn't).
-        head = f"variant={args.prompt_variant}"
+        # like 'mode=playbook|variant=h1-no-handler-map|seed-42' is
+        # greppable; the bare user description without it isn't).
+        head = f"mode={args.mode}|variant={args.prompt_variant}"
+        if args.card:
+            head += f"|card={args.card}"
         if args.description:
             return f"{head}|{args.description}"
         return head
@@ -1618,10 +1638,12 @@ def main(argv: list[str] | None = None) -> int:
         rec = recorder.start_iteration(i) if recorder else None
         scan_path = recorder.scan_jsonl_path(rec) if (recorder and rec) else None
 
+        only_cards = {args.card} if args.card else None
         try:
             gap, ast_text, pe_block = _find_gap_subprocess(
                 args.set_code, args.project_dir,
                 scan_jsonl_path=scan_path,
+                only_cards=only_cards,
             )
         except GapSubprocessError as e:
             stamp(f"{RED}{e}{RESET}")
@@ -1658,44 +1680,92 @@ def main(argv: list[str] | None = None) -> int:
         stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
               f"label={gap.label.splitlines()[0]}")
 
-        prompt = _render_prompt_variant(args.prompt_variant, ctx)
-        if args.dry_run:
-            print(prompt)
-            return 0
-
         if rec is not None and recorder is not None:
             rec.gap_kind = gap.kind
             rec.gap_label = gap.label
             rec.card_name = gap.card_name
-            transcript_path = recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+
+        if args.mode == "playbook":
+            if gap.kind != "lower":
+                stamp(
+                    f"{RED}--mode playbook only supports kind=lower gaps; "
+                    f"got kind={gap.kind} (label={gap.label}). abort.{RESET}"
+                )
+                if recorder and rec:
+                    rec.outcome = "abort_unsupported_kind"
+                    rec.description = _desc()
+                    recorder.finish_iteration(rec)
+                return 2
+
+            if args.dry_run:
+                stamp(f"{DIM}--dry-run with --mode playbook: would call playbook.lower.run "
+                      f"for label={gap.label}{RESET}")
+                return 0
+
+            from argentum_press.playbook import lower as playbook_lower
+            t_start = time.monotonic()
+            stamp(f"{DIM}running playbook.lower...{RESET}")
+            result = playbook_lower.run(
+                label=gap.label,
+                project_dir=args.project_dir,
+                card_name=gap.card_name,
+                oracle_text=gap.oracle_text,
+                ast_text=ast_text,
+                verbose=True,
+            )
+            wall_s = time.monotonic() - t_start
+            stamp(f"{DIM}playbook outcome={result.outcome}  wall_s={wall_s:.2f}{RESET}")
+            if recorder and rec:
+                # Playbook traces have richer per-step timing; runs.tsv only
+                # has the aggregate. Capture wall_s + outcome so the A/B diff
+                # is meaningful.
+                rec.wall_s = wall_s
+                rec.tool_counts = {}  # playbook is structured, no Read/Edit counts
+            if not result.outcome.startswith("applied"):
+                stamp(f"{RED}playbook did not apply ({result.outcome}); aborting iteration.{RESET}")
+                if recorder and rec:
+                    rec.outcome = f"playbook_{result.outcome}"
+                    rec.description = _desc()
+                    recorder.finish_iteration(rec)
+                return 2
+            # Playbook ran pytest as part of its own gate; trust the outcome.
+            summary = json.dumps(result.final_plan, indent=2) if result.final_plan else ""
         else:
-            transcript_path = None
+            prompt = _render_prompt_variant(args.prompt_variant, ctx)
+            if args.dry_run:
+                print(prompt)
+                return 0
 
-        rc, summary = stream_claude(
-            prompt,
-            transcript_path=transcript_path,
-            record=rec,
-            claude_cmd=claude_cmd,
-        )
-        if rc != 0:
-            stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
-            if recorder and rec:
-                rec.outcome = "claude_error"
-                rec.description = _desc()
-                recorder.finish_iteration(rec)
-            return rc
+            transcript_path = (
+                recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+                if (recorder is not None and rec is not None) else None
+            )
 
-        stamp(f"{DIM}running pytest...{RESET}")
-        rc, output = run_pytest()
-        if rc != 0:
-            stamp(f"{RED}pytest red after agent edit; abort.{RESET}")
-            print(output[-2000:], file=sys.stderr)
-            if recorder and rec:
-                rec.outcome = "abort_pytest"
-                rec.description = _desc()
-                recorder.finish_iteration(rec)
-            return rc
-        stamp(f"{GREEN}pytest green.{RESET}")
+            rc, summary = stream_claude(
+                prompt,
+                transcript_path=transcript_path,
+                record=rec,
+                claude_cmd=claude_cmd,
+            )
+            if rc != 0:
+                stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
+                if recorder and rec:
+                    rec.outcome = "claude_error"
+                    rec.description = _desc()
+                    recorder.finish_iteration(rec)
+                return rc
+
+            stamp(f"{DIM}running pytest...{RESET}")
+            rc, output = run_pytest()
+            if rc != 0:
+                stamp(f"{RED}pytest red after agent edit; abort.{RESET}")
+                print(output[-2000:], file=sys.stderr)
+                if recorder and rec:
+                    rec.outcome = "abort_pytest"
+                    rec.description = _desc()
+                    recorder.finish_iteration(rec)
+                return rc
+            stamp(f"{GREEN}pytest green.{RESET}")
 
         if not args.no_commit:
             commit_iteration(
