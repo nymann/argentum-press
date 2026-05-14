@@ -261,6 +261,15 @@ _LOWER_DEFINITIVE_ABORTS: frozenset[str] = frozenset({
     "playbook_aborted-classify-unchanged",
 })
 
+_UNMODELED_DEFINITIVE_ABORTS: frozenset[str] = frozenset({
+    # U6b / U6b-retry — same shape as L7b but for the unmodeled-rule
+    # playbook: the LLM emitted a transformer method that pytest
+    # accepts but doesn't actually construct the new AST class for the
+    # live card's shape. Re-parsing the card still yields the same
+    # unmodeled-rule:X label. Hand off to freeform.
+    "playbook_aborted-classify-unchanged",
+})
+
 
 class ParseErrorPlaybookFixer(GapFixer):
     """Dispatches ``parse-error:`` gaps to the parse-error playbook.
@@ -357,9 +366,16 @@ class UnmodeledRulePlaybookFixer(GapFixer):
             verbose=True,
             pool=self._pool,
         )
-        return _wrap_playbook_outcome(
+        outcome = _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say
         )
+        if outcome.outcome_tag in _UNMODELED_DEFINITIVE_ABORTS:
+            self._say(
+                f"playbook {outcome.outcome_tag}: structured path exhausted, "
+                f"falling back to freeform"
+            )
+            return self._fallback.fix(gap, ctx)
+        return outcome
 
 
 __all__ = [

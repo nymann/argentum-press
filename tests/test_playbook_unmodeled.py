@@ -438,3 +438,65 @@ def test_driver_aborts_on_libcst_failure(tmp_path: Path):
     finally:
         _restore_targets(snap)
     assert result.outcome == "aborted-u5"
+
+
+# ---------------------------------------------------------------------------
+# U6b live-classify gate
+# ---------------------------------------------------------------------------
+
+
+def test_driver_aborts_when_live_classify_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # pytest passes (green runner) but a fresh parse of the originating
+    # card still produces the same unmodeled-rule:X label. The gate
+    # reverts U5's three-file edit and aborts so the strategy chain
+    # can fall back to freeform.
+    monkeypatch.setattr(
+        unmodeled_rule, "_live_card_still_failing_unmodeled",
+        lambda **_kw: True,
+    )
+
+    blocks = [
+        _FakeBlock(type="tool_use", name="emit_ast_class_design", input={
+            "classname": "WidgetStatement",
+            "parent_class": "Statement",
+            "parent_module": "statements",
+            "fields": [],
+            "docstring": "x",
+        }),
+        _FakeBlock(type="tool_use", name="emit_transformer_method", input={
+            "method_source": "def thenstatement_fake(self, items):\n    return WidgetStatement()\n",
+            "extra_imports": [],
+        }),
+    ]
+    client = _ScriptedClient(blocks)
+    snap = _snapshot_writeable_targets()
+    try:
+        result = unmodeled_rule.run(
+            label="unmodeled-rule:thenstatement",
+            project_dir=tmp_path,
+            client=client,
+            pytest_runner=_green_pytest,
+            card_name="Fake Card",
+            oracle_text="then draw a card.",
+            verbose=False,
+        )
+    finally:
+        # Defensive restore — the gate should revert via
+        # edits.revert_unmodeled_rule, but a test-failure interrupt
+        # shouldn't leave the AST package dirty.
+        _restore_targets(snap)
+    assert result.outcome == "aborted-classify-unchanged", result.as_json()
+
+
+def test_live_classify_helper_unmodeled_noop_when_card_data_missing():
+    assert unmodeled_rule._live_card_still_failing_unmodeled(
+        card_name="", oracle_text="", label="unmodeled-rule:thenstatement",
+    ) is False
+    assert unmodeled_rule._live_card_still_failing_unmodeled(
+        card_name="Card", oracle_text="", label="unmodeled-rule:thenstatement",
+    ) is False
+    assert unmodeled_rule._live_card_still_failing_unmodeled(
+        card_name="", oracle_text="text", label="unmodeled-rule:thenstatement",
+    ) is False

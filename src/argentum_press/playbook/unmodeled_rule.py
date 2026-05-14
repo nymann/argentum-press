@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import time
@@ -28,6 +29,62 @@ from typing import Any, Callable
 
 from . import PlaybookResult, context, driver as _driver_mod, edits, heuristics, llm, log_step
 from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _call, _short, run_pytest
+
+
+# ---------------------------------------------------------------------------
+# Live-card classify gate (U6b / U6b-retry)
+# ---------------------------------------------------------------------------
+#
+# Mirror of the lower playbook's L7b gate. pytest accepts a new AST class +
+# transformer method even when the method doesn't actually consume the
+# specific shape the live card emits — the transformer's __default__ then
+# raises LoweringIncomplete and surfaces the SAME unmodeled-rule:X label
+# on the next iteration. The gate re-parses the originating card in a
+# fresh subprocess (the playbook just edited transformer.py + the AST
+# package, so in-process imports are stale) and reverts U5's edits if
+# the same label re-fires.
+
+
+def _live_card_still_failing_unmodeled(
+    *, card_name: str, oracle_text: str, label: str
+) -> bool:
+    """True iff a fresh parse of ``card_name`` returns ``label`` again.
+
+    Returns False on subprocess errors too here — unlike the lower
+    playbook's gate. Reason: U5's edits touch three files (a new AST
+    module member, parser/ast/__init__.py, parser/transformer.py); a
+    subprocess crash post-edit usually means the new code itself is
+    broken, which pytest already caught. Crashes that survive pytest
+    are extremely rare; reverting on them risks blocking real progress.
+    """
+    if not card_name or not oracle_text:
+        return False
+    probe = (
+        "import json, sys\n"
+        "from argentum_press.parser import parse\n"
+        f"r = parse({oracle_text!r}, name={card_name!r})\n"
+        "if r.ok or r.error is None:\n"
+        "    print(json.dumps({'result': 'ok'}))\n"
+        "    sys.exit(0)\n"
+        "print(json.dumps({'result': 'error', 'message': r.error.message}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=context.REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ},
+    )
+    if proc.returncode != 0:
+        return False
+    try:
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return False
+    if out["result"] == "ok":
+        return False
+    return out.get("message") == label
 
 
 U3_MODEL = L4_MODEL
@@ -291,6 +348,26 @@ def run(
     log_step(steps, "U6", "orch", t0, returncode=rc, tail=_short(tail, 200))
     _say(f"U6: pytest rc={rc}")
     if rc == 0:
+        # ---- U6b: live-card classify gate ------------------------------
+        # pytest accepts a transformer method that doesn't actually
+        # construct the new AST class for the live card's shape — the
+        # transformer's __default__ then re-raises LoweringIncomplete and
+        # the same unmodeled-rule:X label re-fires on the next iteration.
+        # The gate catches this before commit.
+        t0 = time.monotonic()
+        live_failed = _live_card_still_failing_unmodeled(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        log_step(
+            steps, "U6b", "orch", t0,
+            card_name=card_name, label=label, still_failing=live_failed,
+        )
+        _say(f"U6b: live-card classify still_failing={live_failed}")
+        if live_failed:
+            edits.revert_unmodeled_rule(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.steps = steps
+            return result
         result.outcome = "applied"
         result.steps = steps
         return result
@@ -363,6 +440,21 @@ def run(
     log_step(steps, "U6-retry", "orch", t0, returncode=rc2, tail=_short(tail2, 200))
     _say(f"U6-retry: pytest rc={rc2}")
     if rc2 == 0:
+        t0 = time.monotonic()
+        live_failed2 = _live_card_still_failing_unmodeled(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        log_step(
+            steps, "U6b-retry", "orch", t0,
+            card_name=card_name, label=label, still_failing=live_failed2,
+        )
+        _say(f"U6b-retry: live-card classify still_failing={live_failed2}")
+        if live_failed2:
+            edits.revert_unmodeled_rule(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.final_plan = {"design": design, "method": revised}
+            result.steps = steps
+            return result
         result.outcome = "applied-after-retry"
         result.final_plan = {"design": design, "method": revised}
         result.steps = steps

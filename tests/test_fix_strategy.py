@@ -20,6 +20,7 @@ from argentum_press.fix_strategy import (
     IterationContext,
     LowerPlaybookFixer,
     ParseErrorPlaybookFixer,
+    UnmodeledRulePlaybookFixer,
 )
 
 
@@ -208,6 +209,64 @@ def test_lower_fixer_passes_through_non_lower_kind():
     fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
     fixer = LowerPlaybookFixer(
         run_lower=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="parse", label="parse-error:<EOF>@t")
+    fixer.fix(gap, _ctx())
+    assert fallback.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# UnmodeledRulePlaybookFixer
+# ---------------------------------------------------------------------------
+
+
+def test_unmodeled_fixer_falls_back_on_classify_unchanged():
+    """U6b / U6b-retry abort with `aborted-classify-unchanged` when pytest
+    passed but the live card still produces the same unmodeled-rule:X
+    label. The fixer delegates to its freeform fallback."""
+    def fake_run(**_kw):
+        return _FakePlaybookResult(outcome="aborted-classify-unchanged")
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = UnmodeledRulePlaybookFixer(
+        run_unmodeled_rule=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="parse", label="unmodeled-rule:discardexpression")
+    result = fixer.fix(gap, _ctx())
+    assert fallback.calls == 1
+    assert result.rc == 0
+    assert result.outcome_tag == "pass"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["aborted-u3", "aborted-u5", "aborted-retry-pytest"],
+)
+def test_unmodeled_fixer_bubbles_other_aborts(outcome: str):
+    def fake_run(**_kw):
+        return _FakePlaybookResult(outcome=outcome)
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = UnmodeledRulePlaybookFixer(
+        run_unmodeled_rule=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="parse", label="unmodeled-rule:foo")
+    result = fixer.fix(gap, _ctx())
+    assert fallback.calls == 0
+    assert result.rc != 0
+    assert result.outcome_tag == f"playbook_{outcome}"
+
+
+def test_unmodeled_fixer_passes_through_non_unmodeled_label():
+    def fake_run(**_kw):
+        raise AssertionError("unmodeled playbook must not be called for non-matching labels")
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = UnmodeledRulePlaybookFixer(
+        run_unmodeled_rule=fake_run,
         fallback=fallback,
     )
     gap = _FakeGap(kind="parse", label="parse-error:<EOF>@t")
