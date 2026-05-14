@@ -226,3 +226,140 @@ def test_stream_claude_without_recording_writes_no_files(
     assert rc == 0
     # No incidental files were dropped in cwd.
     assert list(tmp_path.iterdir()) == [tmp_path / "fake_claude.py"]
+
+
+# ----------------------------------------------------------------------------
+# replay (Phase 1)
+# ----------------------------------------------------------------------------
+
+
+def _write_gap_file(gap_path: Path, *, ref_commit: str) -> None:
+    """Persist a tiny captured-gap payload at ``gap_path``.
+
+    We use a real (unparseable-by-grammar) oracle text so gather_context
+    runs the same code path it would in production — exercising the
+    grammar/handler-map readers — without depending on a specific gap
+    that may shift as the parser evolves."""
+    gap_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "set_code": "test",
+        "gap": {
+            "kind": "parse",
+            "label": "unmodeled-rule:examplerule",
+            "card_name": "Replay Smoke Card",
+            "oracle_text": "Some oracle text the parser does not handle.",
+        },
+        "ast_text": None,
+        "parse_error_block": None,
+        "ref_commit": ref_commit,
+    }
+    gap_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def test_replay_writes_row_and_transcript(
+    tmp_path: Path, fake_claude: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end replay against a fake claude binary.
+
+    We assert: (1) the saved gap was loaded, (2) one row was appended to
+    runs.tsv with the right gap fields, (3) the agent transcript was
+    captured verbatim, (4) the worktree-restore logic ran without error
+    (verified by HEAD being unchanged).
+    """
+    transcript_lines = "\n".join(json.dumps(e) for e in CANNED_TRANSCRIPT)
+    monkeypatch.setenv("FAKE_CLAUDE_TRANSCRIPT", transcript_lines)
+    monkeypatch.setenv("NO_COLOR", "1")
+    # Don't pollute the shared parse cache.
+    monkeypatch.setenv("ARGENTUM_PARSE_CACHE_DIR", str(tmp_path / "pcache"))
+    # Redirect the gap library out of the repo so writing the test gap doesn't
+    # dirty the worktree (which would trip the cleanliness guard).
+    monkeypatch.setenv("ARGENTUM_GAPS_DIR", str(tmp_path / "gaps"))
+
+    head_before = flp.git("rev-parse", "HEAD")
+    gap_path = tmp_path / "gaps" / "test-replay-slug.json"
+    _write_gap_file(gap_path, ref_commit=head_before)
+
+    # Don't actually run pytest against the project during the unit test;
+    # the fake claude doesn't edit anything so an in-memory pass is the
+    # truthful answer.
+    monkeypatch.setattr(flp, "run_pytest", lambda: (0, ""))
+
+    # Stub the worktree snapshot/restore so a test running on a dirty
+    # development checkout doesn't blow away the user's in-progress edits.
+    # We still want to test that they're called; the recorded calls list
+    # gives us a hook to assert that.
+    calls: list[str] = []
+    monkeypatch.setattr(flp, "_snapshot_worktree", lambda: (calls.append("snap"), ("dummy", ""))[1])
+    monkeypatch.setattr(flp, "_restore_worktree", lambda head: calls.append("restore"))
+
+    record_dir = tmp_path / "runs"
+    rc = flp.main([
+        "--replay", "test-replay-slug",
+        "--record", str(record_dir),
+        "--claude-cmd", json.dumps(fake_claude),
+        "--description", "smoke",
+        "--allow-dirty",
+    ])
+
+    assert rc == 0
+
+    # Replay must have snapshotted + restored.
+    assert calls == ["snap", "restore"]
+    # HEAD is unmoved (replay never commits).
+    assert flp.git("rev-parse", "HEAD") == head_before
+
+    tsv = (record_dir / "runs.tsv").read_text(encoding="utf-8").splitlines()
+    assert tsv[0] == flp.RUNS_TSV_HEADER
+    assert len(tsv) == 2
+    cells = dict(zip(flp.RUNS_TSV_HEADER.split("\t"), tsv[1].split("\t"), strict=True))
+    assert cells["gap_kind"] == "parse"
+    assert cells["gap_label"] == "unmodeled-rule:examplerule"
+    assert cells["card_name"] == "Replay Smoke Card"
+    assert cells["outcome"] == "pass"
+    assert "variant=baseline" in cells["description"]
+    assert "replay=test-replay-slug" in cells["description"]
+    assert "smoke" in cells["description"]
+    # Costs / counts arrived from the fake claude.
+    assert cells["num_turns"] == "3"
+    assert float(cells["cost_usd"]) == pytest.approx(0.42)
+    # Transcript jsonl is sitting next to the tsv.
+    transcripts = list(record_dir.glob("*.jsonl"))
+    assert len(transcripts) == 1
+    captured = transcripts[0].read_text(encoding="utf-8").splitlines()
+    assert len(captured) == len(CANNED_TRANSCRIPT)
+
+
+def test_replay_aborts_when_ref_commit_drifts(
+    tmp_path: Path, fake_claude: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saved gap is only safe to replay against the parser state it was
+    captured against. A drifted ref_commit must abort before we burn any
+    agent calls."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("ARGENTUM_PARSE_CACHE_DIR", str(tmp_path / "pcache"))
+    monkeypatch.setenv("ARGENTUM_GAPS_DIR", str(tmp_path / "gaps"))
+
+    gap_path = tmp_path / "gaps" / "test-replay-drift.json"
+    _write_gap_file(gap_path, ref_commit="0" * 40)  # definitely not HEAD
+
+    record_dir = tmp_path / "runs"
+    rc = flp.main([
+        "--replay", "test-replay-drift",
+        "--record", str(record_dir),
+        "--claude-cmd", json.dumps(fake_claude),
+        "--allow-dirty",
+    ])
+
+    assert rc == 2
+    # No row recorded — we never got past the ref_commit guard.
+    if (record_dir / "runs.tsv").exists():
+        tsv = (record_dir / "runs.tsv").read_text(encoding="utf-8").splitlines()
+        assert tsv == [flp.RUNS_TSV_HEADER]
+
+
+def test_replay_requires_record_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    rc = flp.main(["--replay", "anything"])
+    assert rc == 2

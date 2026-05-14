@@ -492,6 +492,17 @@ def render_prompt(ctx: GapContext) -> str:
     return render_prompt_unmodeled(ctx)
 
 
+def _render_prompt_variant(variant: str, ctx: GapContext) -> str:
+    """Dispatch to a prompt variant by name.
+
+    Phase 1 placeholder: only "baseline" is recognised and it dispatches to the
+    inline renderer. Phase 3 replaces this with a prompts/ directory loader.
+    """
+    if variant == "baseline":
+        return render_prompt(ctx)
+    raise ValueError(f"unknown prompt variant: {variant!r}")
+
+
 # ---------------------------------------------------------------------------
 # recording (Phase 0 instrumentation)
 # ---------------------------------------------------------------------------
@@ -1176,10 +1187,220 @@ def _find_gap_subprocess(
     return gap, result_event.get("ast"), result_event.get("parse_error_block")
 
 
+# ---------------------------------------------------------------------------
+# captured-gap library (Phase 1: --capture-gap / --replay)
+# ---------------------------------------------------------------------------
+
+# Captured gaps live here so the experiment runner can iterate over the
+# library without hard-coding paths. ``experiments/gaps/<slug>.json`` is the
+# canonical layout; ``experiments/runs/<tag>/`` holds --record output. Tests
+# override via ARGENTUM_GAPS_DIR so the unit suite doesn't pollute the
+# real library.
+def _gaps_dir() -> Path:
+    override = os.environ.get("ARGENTUM_GAPS_DIR")
+    return Path(override) if override else REPO / "experiments" / "gaps"
+
+
+# Read at module import time for backwards-compat in places that import the
+# constant directly. Tests that need to redirect call sites should both set
+# the env var AND use ``_gaps_dir()`` rather than this attribute.
+GAPS_DIR = _gaps_dir()
+
+
+def _capture_gap(set_code: str, project_dir: Path, slug: str) -> int:
+    """Run the gap finder once and persist the result under
+    ``experiments/gaps/<slug>.json``.
+
+    No claude call, no commit. The captured JSON carries everything the
+    replay path needs to reconstruct the same iteration input: gap kind +
+    label, card name + oracle text, optional AST text + parse-error block,
+    and the commit HEAD was at when the capture ran (so replay can refuse to
+    run against a drifted parser state).
+    """
+    print(f"{BOLD}=== capture-gap {slug} ==={RESET}", flush=True)
+    try:
+        gap, ast_text, pe_block = _find_gap_subprocess(set_code, project_dir)
+    except GapSubprocessError as e:
+        stamp(f"{RED}{e}{RESET}")
+        return 2
+    if gap is None:
+        stamp(f"{YELLOW}no gap found; nothing to capture.{RESET}")
+        return 1
+
+    gaps_dir = _gaps_dir()
+    gaps_dir.mkdir(parents=True, exist_ok=True)
+    out = gaps_dir / f"{slug}.json"
+    payload: dict[str, Any] = {
+        "set_code": set_code,
+        "gap": {
+            "kind": gap.kind,
+            "label": gap.label,
+            "card_name": gap.card_name,
+            "oracle_text": gap.oracle_text,
+        },
+        "ast_text": ast_text,
+        "parse_error_block": pe_block,
+        "ref_commit": git("rev-parse", "HEAD", check=False) or "",
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    stamp(f"{GREEN}captured gap '{slug}' → {out.relative_to(REPO)}{RESET}")
+    stamp(f"  kind={gap.kind}  card={gap.card_name}  label={gap.label.splitlines()[0]}")
+    return 0
+
+
+def _load_gap(slug: str) -> dict[str, Any]:
+    path = _gaps_dir() / f"{slug}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"no captured gap at {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _snapshot_worktree() -> tuple[str, str]:
+    """Capture HEAD + the current ``git status --porcelain`` so the replay
+    cleanup can detect any working-tree change the agent introduced and
+    restore the pre-replay state.
+
+    Returns ``(head_sha, porcelain_text)``. Replay restores by hard-resetting
+    to HEAD and dropping any new untracked files the agent created.
+    """
+    head = git("rev-parse", "HEAD")
+    porcelain = git("status", "--porcelain")
+    return head, porcelain
+
+
+def _restore_worktree(head: str) -> None:
+    """Hard-reset to ``head`` and wipe untracked files.
+
+    Replay is supposed to leave no trace; the agent may have edited tracked
+    files (caught by ``reset --hard``) and/or created new ones (caught by
+    ``clean -fd``). We don't touch the parse cache or anything outside the
+    repo. The user accepted this explicitly: replay is destructive on
+    purpose, and only runs on the dedicated experiment branch.
+    """
+    git("reset", "--hard", head, check=False)
+    git("clean", "-fd", check=False)
+
+
+def _run_replay(
+    *,
+    slug: str,
+    recorder: Recorder,
+    description: str,
+    prompt_variant: str,
+    dry_run: bool,
+    claude_cmd: list[str] | None,
+) -> int:
+    """Run one fix-loop iteration against a saved gap and restore worktree.
+
+    The replay path deliberately skips: (a) the gap subprocess (we use the
+    saved input verbatim), (b) the commit (replay is throwaway), and (c) the
+    parse-cache invalidation (any cache state we touched gets blown away by
+    the worktree restore anyway). Pytest still runs as a verification gate
+    so a replay row in runs.tsv has a real outcome.
+    """
+    print(f"\n{BOLD}=== replay {slug} ==={RESET}", flush=True)
+    try:
+        payload = _load_gap(slug)
+    except FileNotFoundError as e:
+        print(f"{RED}{e}{RESET}", file=sys.stderr)
+        return 2
+
+    head_now = git("rev-parse", "HEAD")
+    ref_commit = payload.get("ref_commit") or ""
+    if ref_commit and ref_commit != head_now:
+        print(
+            f"{RED}replay aborted: gap '{slug}' was captured against "
+            f"{ref_commit[:12]}, but HEAD is {head_now[:12]}.{RESET}\n"
+            f"  Check out the capture commit before replaying.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from argentum_press.diagnose import Gap
+
+    gap_data = payload["gap"]
+    gap = Gap(
+        kind=gap_data["kind"],
+        label=gap_data["label"],
+        card_name=gap_data["card_name"],
+        oracle_text=gap_data["oracle_text"],
+        parse_details=None,
+    )
+    set_code = payload.get("set_code", "")
+    project_dir = Path(payload.get("project_dir", REPO))  # purely for engine hints
+    ast_text = payload.get("ast_text")
+    pe_block = payload.get("parse_error_block")
+
+    ctx = gather_context(
+        set_code=set_code,
+        project_dir=project_dir,
+        kind=gap.kind,
+        label=gap.label,
+        card_name=gap.card_name,
+        oracle_text=gap.oracle_text,
+        ast_text=ast_text,
+        parse_error_block=pe_block,
+    )
+
+    prompt = _render_prompt_variant(prompt_variant, ctx)
+    if dry_run:
+        print(prompt)
+        return 0
+
+    rec = recorder.start_iteration(1)
+    rec.gap_kind = gap.kind
+    rec.gap_label = gap.label
+    rec.card_name = gap.card_name
+    transcript_path = recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+    # description carries the variant tag so a runs.tsv row is enough to know
+    # which prompt produced it without grep'ing back through the script flags.
+    rec.description = f"{description}|variant={prompt_variant}|replay={slug}" if description \
+        else f"variant={prompt_variant}|replay={slug}"
+
+    stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
+          f"label={gap.label.splitlines()[0]}")
+
+    snap_head, _ = _snapshot_worktree()
+    try:
+        rc, _ = stream_claude(
+            prompt,
+            transcript_path=transcript_path,
+            record=rec,
+            claude_cmd=claude_cmd,
+        )
+        if rc != 0:
+            stamp(f"{RED}claude exited {rc}; recording as claude_error.{RESET}")
+            rec.outcome = "claude_error"
+            recorder.finish_iteration(rec)
+            return rc
+
+        stamp(f"{DIM}running pytest...{RESET}")
+        pytest_rc, output = run_pytest()
+        if pytest_rc != 0:
+            stamp(f"{RED}pytest red after replay edit; recording abort_pytest.{RESET}")
+            print(output[-2000:], file=sys.stderr)
+            rec.outcome = "abort_pytest"
+            recorder.finish_iteration(rec)
+            return 0  # replay aborted-pytest is informational, not fatal
+        stamp(f"{GREEN}pytest green.{RESET}")
+        rec.outcome = "pass"
+        recorder.finish_iteration(rec)
+    finally:
+        # Restore the worktree no matter what; replay is supposed to be
+        # idempotent. Important: do this AFTER finish_iteration so the
+        # rec.commit_after column reflects the (unchanged) HEAD before
+        # we reset.
+        _restore_worktree(snap_head)
+        stamp(f"{DIM}worktree restored to {snap_head[:12]}{RESET}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("set_code")
-    ap.add_argument("project_dir", type=Path)
+    ap.add_argument("set_code", nargs="?", default="",
+                    help="Scryfall set code. Ignored when --replay is set.")
+    ap.add_argument("project_dir", type=Path, nargs="?", default=REPO,
+                    help="Path to argentum-engine. Ignored when --replay is set.")
     ap.add_argument("--max-iter", type=int, default=0, help="0 = unbounded")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-commit", action="store_true")
@@ -1187,6 +1408,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--record", type=Path, default=None,
         help="Directory to stream per-iteration NDJSON transcripts + runs.tsv into.",
+    )
+    ap.add_argument(
+        "--replay", type=str, default=None,
+        help="Slug of a saved gap under experiments/gaps/<slug>.json to replay "
+             "instead of running the live gap finder. Requires --record. "
+             "Restores the working tree after the iteration; does not commit.",
+    )
+    ap.add_argument(
+        "--capture-gap", dest="capture_gap", type=str, default=None,
+        help="Run the gap finder once, save the gap to experiments/gaps/<slug>.json, "
+             "and exit without invoking claude.",
+    )
+    ap.add_argument(
+        "--prompt-variant", type=str, default="baseline",
+        help="Name under prompts/ to use for the agent prompt (default: baseline).",
     )
     ap.add_argument(
         "--description", type=str, default="",
@@ -1198,6 +1434,19 @@ def main(argv: list[str] | None = None) -> int:
              "invocation. Tests use this to point at a fake-claude shim.",
     )
     args = ap.parse_args(argv)
+
+    if args.capture_gap is not None:
+        if not args.set_code:
+            print(f"{RED}--capture-gap requires set_code positional.{RESET}", file=sys.stderr)
+            return 2
+        return _capture_gap(args.set_code, args.project_dir, args.capture_gap)
+
+    if args.replay is not None and args.record is None:
+        print(
+            f"{RED}--replay requires --record (replay only makes sense with measurement).{RESET}",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.allow_dirty and git_dirty():
         print(
@@ -1212,6 +1461,21 @@ def main(argv: list[str] | None = None) -> int:
         claude_cmd = json.loads(args.claude_cmd)
 
     recorder = Recorder(args.record) if args.record else None
+
+    if args.replay is not None:
+        assert recorder is not None
+        return _run_replay(
+            slug=args.replay,
+            recorder=recorder,
+            description=args.description,
+            prompt_variant=args.prompt_variant,
+            dry_run=args.dry_run,
+            claude_cmd=claude_cmd,
+        )
+
+    if not args.set_code:
+        print(f"{RED}set_code positional is required.{RESET}", file=sys.stderr)
+        return 2
 
     prev_label = ""
     i = 0
