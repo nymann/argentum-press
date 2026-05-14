@@ -1208,6 +1208,12 @@ class CardTransformer(Transformer):
     def colorsingleexpr(self, items):
         return ColorExpression(value=items[0])
 
+    def colorandexpr(self, items):
+        result = items[0]
+        for item in items[1:]:
+            result = AndExpression(lhs=result, rhs=item)
+        return ColorExpression(value=result)
+
     # -- Withexpression / namedexpression ---------------------------------
 
     def withexpression(self, items):
