@@ -240,12 +240,26 @@ class LowerPlaybookFixer(GapFixer):
         )
 
 
+_PARSE_ERROR_DEFINITIVE_ABORTS: frozenset[str] = frozenset({
+    "playbook_aborted-p4-duplicate",
+    "playbook_aborted-p8-duplicate",
+    "playbook_aborted-classify-unchanged",
+})
+
+
 class ParseErrorPlaybookFixer(GapFixer):
     """Dispatches ``parse-error:`` gaps to the parse-error playbook.
 
     Every other gap is deferred to ``fallback``; in production we chain it
     in front of :class:`UnmodeledRulePlaybookFixer` (which in turn fronts
     :class:`LowerPlaybookFixer`, which fronts a :class:`FreeformFixer`).
+
+    Also delegates to ``fallback`` on the "definitive" abort outcomes that
+    mean the structured playbook tried and definitively can't reach this
+    card (duplicate alternatives, live-card classify unchanged). Those
+    outcomes signal a P1 mis-rank or a missing structural option — both
+    things the freer freeform agent has a better shot at. Other aborts
+    (LLM/IO errors) bubble up so they get surfaced rather than masked.
     """
 
     def __init__(
@@ -281,9 +295,16 @@ class ParseErrorPlaybookFixer(GapFixer):
             verbose=True,
             pool=self._pool,
         )
-        return _wrap_playbook_outcome(
+        outcome = _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say
         )
+        if outcome.outcome_tag in _PARSE_ERROR_DEFINITIVE_ABORTS:
+            self._say(
+                f"playbook {outcome.outcome_tag}: structured path exhausted, "
+                f"falling back to freeform"
+            )
+            return self._fallback.fix(gap, ctx)
+        return outcome
 
 
 class UnmodeledRulePlaybookFixer(GapFixer):
