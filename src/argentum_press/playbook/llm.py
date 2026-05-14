@@ -636,7 +636,10 @@ def call_tool_via_cli(
         + f"{user_prompt}\n\n"
         f"Respond with EXACTLY one JSON object matching this schema, "
         f"wrapped in a single ```json fenced code block. Do not include "
-        f"any prose outside the fence. Do not call any tools.\n\n"
+        f"any prose outside the fence. Do not call any tools. Inside "
+        f"JSON string values, never use unescaped double quotes — quote "
+        f"nested phrases with single quotes or backticks instead. The "
+        f"output must be parseable by `json.loads` on the first try.\n\n"
         f"SCHEMA (tool_name={tool_name}):\n\n{schema_str}\n"
     )
 
