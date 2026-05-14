@@ -1056,6 +1056,13 @@ class CardTransformer(Transformer):
             result = OrExpression(lhs=item, rhs=result)
         return result
 
+    def andobjectdescriptionexpression(self, items):
+        # objectdescriptionexpression ("," objectdescriptionexpression ",")* "and" objectdescriptionexpression
+        result = items[-1]
+        for item in reversed(items[:-1]):
+            result = AndExpression(lhs=item, rhs=result)
+        return result
+
     def objectpreterm(self, items):
         return items[0]
 
