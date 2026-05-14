@@ -1,20 +1,31 @@
 # pyright: basic
-"""Anthropic SDK wrapper for the lower-gap playbook.
+"""LLM transports for the three playbooks (lower / parse-error / unmodeled-rule).
 
-Each LLM step in the playbook is a *single* tool_use call: the model is
-forced into a JSON schema so the orchestrator can validate and act on the
-output without re-parsing prose. We use prompt caching aggressively — the
+Each LLM step is a *single* tool_use-style call: the model is forced into
+a JSON schema so the orchestrator can validate and act on the output
+without re-parsing prose. We use prompt caching aggressively — the
 system block and the static context blocks (AST class source, exemplar
 handlers) are marked ``cache_control: ephemeral`` so the L4/L5b/L9 calls
 within one playbook iteration share their prefix.
 
-Models:
+Three transports, picked by ``lower._call`` based on the model name +
+which arguments are supplied:
 
-* ``claude-haiku-4-5-20251001`` for the cheap L3 summary.
-* ``claude-opus-4-7`` for L4 strategy, L5b code emission, and L9 retry.
+* :func:`call_tool` — Anthropic SDK. Used when ``client`` is provided
+  (production SDK path; tests pass a FakeClient with SDK shape).
+* :func:`call_tool_via_cli` — long-lived ``claude -p`` subprocess
+  pool. Used in production when ``pool`` is provided.
+* :func:`call_tool_via_local_openai` — POST to an OpenAI-compatible
+  local server on ``http://localhost:8080``. Routed to automatically
+  when the model name contains ``/`` (e.g.
+  ``mlx-community/Qwen3-Coder-Next-4bit``).
 
-Tests inject a fake ``client`` to avoid live calls; the real client is
-constructed via :class:`anthropic.Anthropic` when ``client=None``.
+Model assignment (see ``lower.py``, ``parse_error.py``, ``unmodeled_rule.py``):
+
+* L3 cached-summary  → ``mlx-community/Qwen3-Coder-Next-4bit`` (local).
+* L4 / L5 / P3 / U3 / U4 (picker + non-grammar code emission) → sonnet 4.6.
+* P4 (new grammar emission) → opus 4.7.
+* L9 / P8 / U8 (retry-after-pytest-red diagnosis) → opus 4.7.
 """
 from __future__ import annotations
 

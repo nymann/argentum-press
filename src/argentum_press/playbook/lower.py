@@ -171,14 +171,27 @@ def _call(
 ) -> llm.ToolCallResult:
     """Route to CLI driver, SDK, or local OpenAI server based on transport.
 
-    Tests pass ``client=`` (FakeClient with SDK shape) and exercise the
-    SDK path. Production passes ``pool=`` and exercises the long-lived
-    ``claude`` subprocess. Exactly one must be set.
+    Routing precedence:
 
-    A ``model`` name containing ``/`` (e.g. ``mlx-community/Qwen3-...``)
-    routes to the local OpenAI-compatible server instead of either
-    Anthropic transport — used for the cheap L3 cached-summary step.
+    * ``client`` is set → SDK path with that client (test mode; the
+      scripted client owns every LLM turn regardless of model name).
+    * ``model`` is a local namespace (contains ``/``) → local OpenAI-
+      compatible POST to ``http://localhost:8080``. Used in production
+      for L3's cheap summary; can be overridden by injecting a client
+      from tests.
+    * ``pool`` is set → CLI-backed claude subprocess.
+    * Otherwise → fresh Anthropic SDK client.
     """
+    if client is not None:
+        return llm.call_tool(
+            tool_name=tool_name,
+            system_prompt=system_prompt,
+            static_context_blocks=static_context_blocks,
+            user_prompt=user_prompt,
+            model=model,
+            client=client,
+            max_tokens=max_tokens,
+        )
     if llm._is_local_model(model):
         return llm.call_tool_via_local_openai(
             tool_name=tool_name,
@@ -203,7 +216,7 @@ def _call(
         static_context_blocks=static_context_blocks,
         user_prompt=user_prompt,
         model=model,
-        client=client,
+        client=None,
         max_tokens=max_tokens,
     )
 
