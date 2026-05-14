@@ -1753,6 +1753,11 @@ class CardTransformer(Transformer):
         # Mirrors gainlifeexpression's surface-only stub.
         return GainLoseExpression(subject=None)
 
+    def loseabilitiesexpression(self, items):
+        # declarationorreference? "lose"["s"] declarationorreference
+        # Mirrors gainabilityexpression's surface-only stub.
+        return GainLoseExpression(subject=None)
+
     def chooseexpression(self, items):
         # playerdeclref? ("choose"["s"]|"chose") declarationorreference
         #   ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression?
