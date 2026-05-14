@@ -43,7 +43,7 @@ def getGrammar():
         wouldstatement: playerdeclref? "would" statement
         additionalcoststatement: "as" "an" "additional" "cost" "to" statement "," statement
         modalstatement: "choose" valuecardinal DASH (modalchoiceexpression)+
-        modalchoiceexpression: MODALCHOICE statementblock
+        modalchoiceexpression: MODALCHOICE abilityword? statementblock
 
         dostatement: declarationorreference? ("do" | "does") statement? -> dostatement
         | declarationorreference? ("do" "not" | "does" "not") statement? -> dontstatement
