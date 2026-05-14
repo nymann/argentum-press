@@ -1172,6 +1172,14 @@ class CardTransformer(Transformer):
     def negativeownpostfix(self, items):
         return NonExpression(operand=ControlExpression(controller=items[0]))
 
+    def bypostfix(self, items):
+        # `"by" <declarationorreference>` — e.g. "card revealed by the other player".
+        return ControlExpression(controller=items[0])
+
+    def revealedpostfix(self, items):
+        # `<playerdeclref> reveal[s]/revealed` — e.g. "the card they revealed".
+        return ControlExpression(controller=items[0])
+
     def namedexpression(self, items):
         return NamedExpression(operand=items[0])
 

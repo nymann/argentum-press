@@ -425,8 +425,8 @@ def getGrammar():
         genericdescriptionexpression: objectdescriptionexpression | playerdescriptionexpression
 
         playerdeclref: playerdeclaration | playerreference
-        playerdeclaration: declarationdecorator* playerdefinition
-        playerreference: referencedecorator+ playerdefinition
+        playerdeclaration: declarationdecorator* playerdefinition ["each"]
+        playerreference: referencedecorator+ playerdefinition ["each"]
         playerdefinition: playerdescriptionexpression
         playerdescriptionexpression : playerdescriptionterm (","? playerdescriptionterm)*
         playerdescriptionterm: valueordinal | modifier | playerterm | withexpression | withoutexpression | whoexpression
@@ -448,8 +448,10 @@ def getGrammar():
         | qualifier | modifier | locationexpression | valuecardinal | additionalexpression | characteristicexpression
         objectpostterm: withexpression | withoutexpression | choiceexpression | ofexpression | characteristicexpression | atrandomexpression
         | "that"? dealtdamageexpression | "that" doesnthaveexpression | controlpostfix | ownpostfix | putinzonepostfix | castpostfix | "that" ispostfix | targetspostfix
-        | "that" sharepostfix | namedexpression | otherthanexpression | modifier
+        | "that" sharepostfix | namedexpression | otherthanexpression | bypostfix | revealedpostfix | modifier
         otherthanexpression: "other" "than" declarationorreference
+        bypostfix: "by" declarationorreference
+        revealedpostfix: playerdeclref ("reveal"["s"] | "revealed")
 
         //[TODO: Mana type declarations. Mana is now a first-class citizen!]
         manadeclref: manadeclaration | manareference
