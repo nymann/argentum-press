@@ -1003,6 +1003,11 @@ class CardTransformer(Transformer):
     def genericdeclarationexpression(self, items):
         return items[0]
 
+    def eachofgenericdeclarationexpression(self, items):
+        # "each of" <declarationorreference> — mirrors the eachdecorator path
+        # (transformer.py:eachdecorator) so downstream sees a UnaryOp shape.
+        return EachExpression(operand=items[0])
+
     def genericdescriptionexpression(self, items):
         return items[0]
 

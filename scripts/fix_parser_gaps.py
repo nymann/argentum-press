@@ -541,6 +541,81 @@ def stream_claude(prompt: str) -> tuple[int, str]:
     return proc.returncode, last_text
 
 
+# --- syntax highlighting for Read tool_results ------------------------------
+#
+# Whole-file highlighting is the only correct approach: Python's triple-quoted
+# strings, parenthesized expressions and f-string nesting cross line boundaries,
+# so pygments has to see the full file to color them right. We cache the result
+# keyed by (path, mtime_ns, size) — stat'ing is microseconds, re-highlighting
+# is milliseconds even for the 940-line grammar, and the agent's edits bump
+# mtime so the cache auto-invalidates.
+
+_highlight_cache: dict[tuple[str, int, int], list[str]] = {}
+
+# Map of tool_use id -> {name, input}, populated as we see assistant tool_use
+# events. When the matching tool_result arrives we look up by tool_use_id so
+# Read results get routed through the highlighter.
+_tool_uses_by_id: dict[str, dict[str, Any]] = {}
+
+
+def _highlight_file_lines(path: str) -> list[str] | None:
+    """Return ANSI-highlighted lines of ``path``, or None if pygments can't
+    handle the file (no lexer, file unreadable, etc.). Cached by stat tuple."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    cached = _highlight_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        import pygments
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import get_lexer_for_filename
+        from pygments.util import ClassNotFound
+    except ImportError:
+        return None
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        lexer = get_lexer_for_filename(path)
+    except ClassNotFound:
+        return None
+    highlighted = pygments.highlight(content, lexer, TerminalFormatter())
+    lines = highlighted.splitlines()
+    _highlight_cache[key] = lines
+    return lines
+
+
+def _render_read_result(file_path: str, offset: int | None, limit: int | None) -> str | None:
+    """Render a Read tool_result by slicing the cached highlighted file.
+
+    Returns a multi-line string (with line-number prefixes mirroring the agent's
+    Read tool format), or None if highlighting wasn't possible — caller falls
+    back to the raw tool_result content in that case.
+    """
+    lines = _highlight_file_lines(file_path)
+    if lines is None:
+        return None
+    start = max((offset or 1) - 1, 0)
+    # Read tool's default limit is ~2000 lines; mirror so we don't show the
+    # whole 10k-line file when the agent issued a no-limit read.
+    end = start + (limit if limit is not None else 2000)
+    end = min(end, len(lines))
+    if start >= len(lines):
+        return None
+    return "\n".join(
+        f"{DIM}{(start + 1 + i):>4}{RESET}  {ln}"
+        for i, ln in enumerate(lines[start:end])
+    )
+
+
+# ----------------------------------------------------------------------------
+
+
 def _indent(text: str, prefix: str = "  ") -> str:
     """Indent every line of ``text`` by ``prefix``."""
     return "\n".join(prefix + ln for ln in text.splitlines())
