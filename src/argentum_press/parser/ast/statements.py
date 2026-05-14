@@ -295,3 +295,11 @@ class UnlessStatement(Statement):
 
     body: Statement | None = None
     condition: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CostReductionStatement(Statement):
+    """``<subject> costs <amount> less to cast`` — reduces the mana cost of casting a spell by a given amount."""
+
+    subject: Expression | None = None
+    amount: Expression | None = None
