@@ -55,6 +55,7 @@ from argentum_press.parser.ast import (
     AndOrExpression,
     AnnihilatorAbility,
     AnyColorSpecifier,
+    AsLongAsStatement,
     AsStatement,
     AtStatement,
     AuraSwapAbility,
@@ -1504,6 +1505,14 @@ class CardTransformer(Transformer):
 
     def atstatementinv(self, items):
         return AtStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def aslongasstatement(self, items):
+        # "for"? "as" "long" "as" statement "," statement
+        return AsLongAsStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def aslongasstatementinv(self, items):
+        # statement "for"? "as" "long" "as" statement
+        return AsLongAsStatement(conditional=items[1], consequence=items[0], inverted=True)
 
     def forstatementinv(self, items):
         # statement "for" "each" (genericdeclarationexpression | "time" statement) ("beyond" "the" "first")?
