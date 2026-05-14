@@ -876,6 +876,16 @@ class KotlinLowerer:
         # the gap moves past ChangeZoneExpression.
         return "Effects.ChangeZone()"
 
+    @effect.register
+    def _(self, e: ast.DescriptionExpression) -> str:
+        # A flat descriptor sequence used as an effect (e.g. "Equipped
+        # creature +1/+1" — a DescriptionExpression with a nested
+        # DescriptionExpression subject and a PTExpression stat mod, with
+        # no surrounding verb). argentum-engine has no top-level surface
+        # that consumes a bare description; emit a stub so the gap moves
+        # past DescriptionExpression to whatever the next unhandled node is.
+        return "Effects.Description()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
