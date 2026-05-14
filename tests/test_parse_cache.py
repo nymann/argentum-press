@@ -128,6 +128,49 @@ def test_clear_wipes_everything(cache_dir: Path, monkeypatch: pytest.MonkeyPatch
     assert not cache_dir.exists() or _file_count(cache_dir, ".pkl") == 0
 
 
+def test_version_mismatch_wipes_cache(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the on-disk version doesn't match CACHE_VERSION, the next cache
+    access wipes everything. Guards against silently serving stale-schema
+    pickles after a parser change."""
+    def fake_parse(card: dict) -> ParseResult:
+        return ParseResult(ast=ast_module.Card())
+
+    monkeypatch.setattr("argentum_press.parser.parse", fake_parse)
+
+    # Fill the cache with the current version.
+    parse_cache.cached_parse(_bird())
+    assert _file_count(cache_dir, ".pkl") == 1
+    assert (cache_dir / "_version").read_text() == str(parse_cache.CACHE_VERSION)
+
+    # Pretend the version on disk is stale (e.g. left over from before a
+    # CACHE_VERSION bump).
+    (cache_dir / "_version").write_text("0")
+    parse_cache.cached_parse({"name": "Other Bird", "oracle_text": "Flying"})
+    # The bird from before should have been wiped; only the new card remains.
+    assert _file_count(cache_dir, ".pkl") == 1
+    assert (cache_dir / "_version").read_text() == str(parse_cache.CACHE_VERSION)
+
+
+def test_clear_wipes_version_file(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_parse(card: dict) -> ParseResult:
+        return ParseResult(ast=ast_module.Card())
+
+    monkeypatch.setattr("argentum_press.parser.parse", fake_parse)
+    parse_cache.cached_parse(_bird())
+    assert (cache_dir / "_version").exists()
+
+    parse_cache.clear()
+    assert not cache_dir.exists() or not (cache_dir / "_version").exists()
+
+    # Next access recreates the version file.
+    parse_cache.cached_parse(_bird())
+    assert (cache_dir / "_version").read_text() == str(parse_cache.CACHE_VERSION)
+
+
 def test_corrupt_pickle_falls_through(
     cache_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -8,11 +8,20 @@ across many iterations dominates wall-clock.
 
 Cache layout under :data:`CACHE_ROOT`::
 
-    <root>/<sha[:2]>/<sha>.pkl    pickled ParseResult (payload)
-    <root>/<sha[:2]>/<sha>.meta   one-line text index: "pass\\t" or "fail\\t<label>"
+    <root>/_version              one-line text: int matching :data:`CACHE_VERSION`
+    <root>/<sha[:2]>/<sha>.pkl   pickled ParseResult (payload)
+    <root>/<sha[:2]>/<sha>.meta  one-line text index: "pass\\t" or "fail\\t<label>"
 
 The .meta sidecar lets :func:`invalidate_label` find affected entries
 without unpickling every payload — a hot path after each fix-loop iteration.
+
+The ``_version`` sidecar guards against schema drift: if the pickled
+``ParseResult`` shape or the gap-label format changes, bump
+:data:`CACHE_VERSION` and the next read wipes the cache automatically.
+Without this we silently serve stale labels after a parser change (the
+shipped trigger: an earlier label-format fix appeared not to take effect
+because cached pickles from before the fix still carried the old
+``error.message``).
 
 Invalidation policy is "label-targeted, trust-additive": after the agent
 fixes a parser/transformer gap with label ``L``, the orchestrator calls
@@ -33,6 +42,13 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .parser import ParseResult
+
+
+# Bump when the pickled ParseResult shape, the gap-label format, or any
+# other on-disk schema changes. Mismatched entries are wiped on the next
+# cache access — cheaper for the user than having to remember to call
+# `clear()` after every parser edit that affects what we serialize.
+CACHE_VERSION = 2
 
 
 def _cache_root() -> Path:
@@ -62,6 +78,28 @@ def _paths(key: str) -> tuple[Path, Path]:
     return d / f"{key}.pkl", d / f"{key}.meta"
 
 
+def _ensure_version() -> None:
+    """Wipe the cache when its on-disk schema version doesn't match
+    :data:`CACHE_VERSION`.
+
+    Stat'd on every call; ~microseconds when in sync. The alternative — a
+    module-global "already-checked" flag — would survive across tests using
+    different cache dirs and silently skip the check on a fresh dir.
+    """
+    root = _cache_root()
+    vfile = root / "_version"
+    try:
+        existing: int | None = int(vfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        existing = None
+    if existing == CACHE_VERSION:
+        return
+    if root.is_dir():
+        shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    vfile.write_text(str(CACHE_VERSION), encoding="utf-8")
+
+
 def cached_parse(card: dict[str, Any]) -> ParseResult:
     """Return the ``ParseResult`` for ``card``, using the disk cache when enabled.
 
@@ -74,6 +112,7 @@ def cached_parse(card: dict[str, Any]) -> ParseResult:
     if not _enabled():
         return parse(card)
 
+    _ensure_version()
     key = _key(card)
     pkl, meta = _paths(key)
     if pkl.exists():
@@ -117,6 +156,9 @@ def invalidate_label(label: str) -> int:
     directory does not exist (returns 0). Walks all ``.meta`` files; sub-second
     on local disk even for a 25k-card cache.
     """
+    if not _enabled():
+        return 0
+    _ensure_version()
     root = _cache_root()
     if not root.is_dir():
         return 0
