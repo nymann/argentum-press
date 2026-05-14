@@ -453,6 +453,13 @@ class UncastExpression(EffectExpression):
 
 
 @dataclass(frozen=True, slots=True)
+class CastExpression(EffectExpression):
+    """``cast <subject>`` — surface stub mirroring UncastExpression."""
+
+    subject: Expression
+
+
+@dataclass(frozen=True, slots=True)
 class GainLoseExpression(EffectExpression):
     """``gain/lose <subject>`` — Reed left this stubbed; carried forward."""
 

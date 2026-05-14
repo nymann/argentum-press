@@ -67,6 +67,7 @@ from argentum_press.parser.ast import (
     BuybackAbility,
     Card,
     CardDrawExpression,
+    CastExpression,
     ChampionAbility,
     ChangeZoneExpression,
     ChoiceExpression,
@@ -1726,6 +1727,15 @@ class CardTransformer(Transformer):
 
     def uncastexpression(self, items):
         return UncastExpression(subject=items[0])
+
+    def castexpression(self, items):
+        # playerdeclref? "next"? "cast"["s"] declarationorreference
+        #   (castmodifier ("and" castmodifier)?)* timeexpression?
+        # Surface-only stub mirroring chooseexpression: surface the first
+        # child as the subject; playerdeclref, castmodifiers, and
+        # timeexpression are dropped until a card needs them.
+        subject = items[0] if items else Name(name="")
+        return CastExpression(subject=subject)
 
     def drawexpression(self, items):
         # playerdeclref? ("draw"["s"]|"drew") cardexpression
