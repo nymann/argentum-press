@@ -47,6 +47,7 @@ from argentum_press.parser.ast import (
     AbsorbAbility,
     ActivationRestrictionStatement,
     ActivationStatement,
+    AddManaExpression,
     AddRemoveExpression,
     AffinityAbility,
     AfflictAbility,
@@ -1912,6 +1913,12 @@ class CardTransformer(Transformer):
     def manadeclref(self, items):
         # manadeclaration | manareference
         return items[0]
+
+    def addmanaexpression(self, items):
+        # playerdeclref? "add"["s"] manadeclref
+        if len(items) == 2:
+            return AddManaExpression(mana=items[1], player=items[0])
+        return AddManaExpression(mana=items[0])
 
     def manasymbol(self, items):
         return items[0]
