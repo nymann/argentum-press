@@ -181,7 +181,7 @@ def getGrammar():
         | kwreadahead | kwravenous | kwsquad | kwprototype | kwlivingmetal
         | kwformirrodin | kwtoxic | kwbackup | kwbargain | kwcraft | kwdisguise
         | kwsolve | kwplot | kwsaddle | kwspree | kwfreerunning | kwgift
-        | kwoffspring | kwimpending | kwwebslinging
+        | kwoffspring | kwimpending | kwwebslinging | kwmayhem
 
 
         kwdeathtouch: "deathtouch"
@@ -361,6 +361,7 @@ def getGrammar():
         kwoffspring: "offspring" cost
         kwimpending: "impending" valuenumber cost
         kwwebslinging: "web-slinging" cost
+        kwmayhem: "mayhem" cost
 
         //ABILITY COSTS
 
@@ -479,7 +480,7 @@ def getGrammar():
         referencedecorator: ("that" | "those") -> thatreference
         | ("this"|"these") -> thisreference
         | possessiveterm -> possessivereference
-        !possessiveterm: "its" | "your" | "their" | namereference ("'s"|"'") | objectdeclref ("'s"|"'") 
+        !possessiveterm: "its" | "his" | "her" | "your" | "their" | namereference ("'s"|"'") | objectdeclref ("'s"|"'")
         | playerdeclref ("'s"|"'") | typeexpression ("'s"|"'") | genericdeclarationexpression ("'s"|"'")
 
         ptexpression: valueexpression "/" valueexpression
@@ -585,7 +586,7 @@ def getGrammar():
         | declarationorreference? "assign"["s"] "no" DAMAGETYPE timeexpression -> nodamageassignedexpression
         | declarationorreference? "assign"["s"] DAMAGETYPE valueexpression -> alternatedamageassignmentexpression
         ableexpression: declarationorreference? "able" ("to" statement "do" "so")?
-        changezoneexpression: declarationorreference ("enter"["s"] | "entered") locationexpression? controlmodifier? genericdeclarationexpression? zoneplacementmodifier? timeexpression? -> enterzoneexpression
+        changezoneexpression: declarationorreference ("enter"["s"] | "entered") ("as" declarationorreference)? locationexpression? controlmodifier? genericdeclarationexpression? zoneplacementmodifier? timeexpression? -> enterzoneexpression
         | declarationorreference "leaves" locationexpression -> leavezoneexpression
         skiptimeexpression: playerdeclref? "skip"["s"] timeexpression
         switchexpression: playerdeclref? "switch"["es"] declarationorreference
@@ -853,7 +854,7 @@ def getGrammar():
 
         qualifier: QUALIFIER["s"]
         | "non" QUALIFIER -> nonqualifier
-        QUALIFIER: ("ability"|"abilities") | "card" | "permanent" | "source" | "spell" | "token" | "effect"
+        QUALIFIER: ("ability"|"abilities") | "card" | "permanent" | "source" | "spell" | "token" | "effect" | ("copy"|"copies")
 
         characteristicexpression: characteristicterms 
         | (characteristicterms (valueexpression|ptexpression) | (valueexpression|ptexpression) characteristicterms) -> characteristicvaluecompexpr
