@@ -496,6 +496,13 @@ class CardDrawExpression(EffectExpression):
 
 
 @dataclass(frozen=True, slots=True)
+class MillExpression(EffectExpression):
+    """``mill <quantity> cards``."""
+
+    quantity: Expression
+
+
+@dataclass(frozen=True, slots=True)
 class SearchLibraryExpression(EffectExpression):
     """``search <owner> library for <subject>``."""
 

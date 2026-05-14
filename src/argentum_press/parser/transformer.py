@@ -135,6 +135,7 @@ from argentum_press.parser.ast import (
     ManaExpression,
     MayStatement,
     MayhemAbility,
+    MillExpression,
     MiracleAbility,
     ModalChoice,
     ModalExpression,
@@ -1839,6 +1840,12 @@ class CardTransformer(Transformer):
         card_expr = items[-1]
         quantity = _quantity_from_cardexpression(card_expr)
         return CardDrawExpression(quantity=quantity)
+
+    def millexpression(self, items):
+        # playerdeclref? "mill"["s"] cardexpression
+        card_expr = items[-1]
+        quantity = _quantity_from_cardexpression(card_expr)
+        return MillExpression(quantity=quantity)
 
     def cardexpression(self, items):
         # Carries through raw - drawexpression extracts the quantity.
