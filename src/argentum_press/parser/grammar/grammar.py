@@ -734,7 +734,7 @@ def getGrammar():
         levelupexpression: ("level" levelrangeexpression ptexpression ability*)
         levelrangeexpression: NUMBER "-" NUMBER | NUMBER "+"
         surveilexpression: "surveil" valueexpression
-        conniveexpression: "connive" valueexpression
+        conniveexpression: declarationorreference? "connive"["s"] valueexpression?
         monstrosityexpression: "monstrosity" valueexpression
         adaptexpression: "adapt" valueexpression
         amassexpression: "amass" typeterm? valueexpression
