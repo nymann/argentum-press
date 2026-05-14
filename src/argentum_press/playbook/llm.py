@@ -90,12 +90,93 @@ PLAN_SCHEMA: dict[str, Any] = {
 }
 
 
+# --- parse-error schemas --------------------------------------------------
+
+
+PARSE_PARENT_CHOICE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["parent_rule", "missing_phrase", "rationale"],
+    "properties": {
+        "parent_rule": {"type": "string"},
+        "missing_phrase": {"type": "string"},
+        "rationale": {"type": "string"},
+    },
+}
+
+
+PARSE_ALTERNATIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["parent_rule", "alternative_text", "label"],
+    "properties": {
+        "parent_rule": {"type": "string"},
+        "alternative_text": {"type": "string"},
+        "label": {"type": ["string", "null"]},
+    },
+}
+
+
+# --- unmodeled-rule schemas -----------------------------------------------
+
+
+AST_FIELD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "type"],
+    "properties": {
+        "name": {"type": "string"},
+        "type": {"type": "string"},
+        "default": {"type": ["string", "null"]},
+    },
+}
+
+
+AST_CLASS_DESIGN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["classname", "parent_class", "parent_module", "fields", "docstring"],
+    "properties": {
+        "classname": {"type": "string"},
+        "parent_class": {"type": "string"},
+        "parent_module": {"type": "string"},
+        "fields": {
+            "type": "array",
+            "items": AST_FIELD_SCHEMA,
+            "minItems": 0,
+            "maxItems": 12,
+        },
+        "docstring": {"type": "string"},
+    },
+}
+
+
+TRANSFORMER_METHOD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["method_source", "extra_imports"],
+    "properties": {
+        "method_source": {"type": "string"},
+        "extra_imports": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+            "maxItems": 20,
+        },
+    },
+}
+
+
 # Mapping each tool name to its schema. The wrapper uses this to validate the
 # response body after Claude returns a tool_use block.
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "emit_ast_summary": SUMMARY_SCHEMA,
     "emit_strategy": STRATEGY_SCHEMA,
     "emit_plan": PLAN_SCHEMA,
+    "emit_parse_parent_choice": PARSE_PARENT_CHOICE_SCHEMA,
+    "emit_parse_alternative": PARSE_ALTERNATIVE_SCHEMA,
+    "emit_ast_class_design": AST_CLASS_DESIGN_SCHEMA,
+    "emit_transformer_method": TRANSFORMER_METHOD_SCHEMA,
 }
 
 
@@ -473,3 +554,211 @@ SYSTEM_PROMPT = (
     "argentum-engine has no surface for a concept, emit a stub like "
     "'Effects.X()' so the gap moves past this AST class to whatever's next."
 )
+
+
+# ---------------------------------------------------------------------------
+# Parse-error playbook prompts
+# ---------------------------------------------------------------------------
+
+
+PARSE_ERROR_SYSTEM_PROMPT = (
+    "You are the parse-error playbook for argentum-press. Lark rejected a "
+    "card's preprocessed oracle text — that means an existing grammar rule "
+    "needs a new alternative. Each call emits one tool_use payload. Grammar "
+    "literals are double-quoted lowercase tokens; alternatives attach to the "
+    "rule with `| <alt> -> <label>` (the label is optional but conventional). "
+    "Keep alternatives short and mirror the style of the surrounding rule. "
+    "Never invent new terminal names — only literals already used elsewhere "
+    "in the grammar or new double-quoted strings. Do NOT include the leading "
+    "`|` in alternative_text; the orchestrator adds it. Labels are lowercase "
+    "rule-name shape (e.g. `redirectalldamageexpression`)."
+)
+
+
+def build_parse_parent_choice_blocks(
+    *,
+    pe_block: str,
+    candidates_dump: str,
+    oracle_text: str,
+) -> list[dict[str, Any]]:
+    """Static prefix for the P3 parent-rule choice call.
+
+    The orchestrator already ranked three rules and dumped their definitions.
+    The LLM only needs to pick one + identify the missing phrase. Both
+    blocks are static within an iteration so we mark them ephemeral.
+    """
+    return [
+        {
+            "type": "text",
+            "text": (
+                f"FAILING ORACLE TEXT\n\n{oracle_text}\n\n"
+                f"LARK ERROR\n\n{pe_block}"
+            ),
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": (
+                f"TOP-3 CANDIDATE PARENT RULES (ranked by literal overlap)\n\n"
+                f"{candidates_dump}"
+            ),
+            "cache_control": _CACHE_CONTROL,
+        },
+    ]
+
+
+def build_parse_alternative_blocks(
+    *,
+    pe_block: str,
+    oracle_text: str,
+    parent_rule_def: str,
+    parent_choice_json: str,
+) -> list[dict[str, Any]]:
+    """Static prefix for the P4 alternative-emission call."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                f"FAILING ORACLE TEXT\n\n{oracle_text}\n\n"
+                f"LARK ERROR\n\n{pe_block}"
+            ),
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"PARENT RULE DEFINITION\n\n{parent_rule_def}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"P3 PARENT CHOICE\n\n{parent_choice_json}",
+        },
+    ]
+
+
+def build_parse_retry_blocks(
+    *,
+    pe_block: str,
+    oracle_text: str,
+    parent_rule_def: str,
+    parent_choice_json: str,
+    failed_plan_json: str,
+    pytest_tail: str,
+) -> list[dict[str, Any]]:
+    blocks = build_parse_alternative_blocks(
+        pe_block=pe_block,
+        oracle_text=oracle_text,
+        parent_rule_def=parent_rule_def,
+        parent_choice_json=parent_choice_json,
+    )
+    blocks.append(
+        {
+            "type": "text",
+            "text": (
+                f"PREVIOUS PLAN (rejected by pytest)\n\n{failed_plan_json}\n\n"
+                f"PYTEST OUTPUT (last 1500 chars)\n\n{pytest_tail}"
+            ),
+        }
+    )
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# Unmodeled-rule playbook prompts
+# ---------------------------------------------------------------------------
+
+
+UNMODELED_RULE_SYSTEM_PROMPT = (
+    "You are the unmodeled-rule playbook for argentum-press. Lark parsed a "
+    "card but the CardTransformer has no method for one of the rules it "
+    "produced — so we need to (a) design a frozen-slots @dataclass AST node "
+    "and (b) write the transformer method that builds it from lark `items`. "
+    "Each call emits one tool_use payload. Mirror the exemplar diffs: every "
+    "dataclass is `@dataclass(frozen=True, slots=True)`, extends a base from "
+    "the same file (Statement/Expression/Ability), uses `tuple[…, …]` for "
+    "collections, and `None` for optional fields. Transformer methods are "
+    "named after the rule, take `(self, items)`, and inspect `items` types "
+    "to pick fields out. Don't import lark — items are already transformed."
+)
+
+
+def build_ast_design_blocks(
+    *,
+    rule_def: str,
+    parent_module_summary: str,
+    exemplar_diffs: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "text": f"GRAMMAR RULE DEFINITION\n\n{rule_def}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": (
+                f"PARENT AST MODULE (existing class names)\n\n"
+                f"{parent_module_summary}"
+            ),
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"EXEMPLAR `parser: handle <rule>` DIFFS\n\n{exemplar_diffs}",
+            "cache_control": _CACHE_CONTROL,
+        },
+    ]
+
+
+def build_transformer_method_blocks(
+    *,
+    rule_def: str,
+    ast_design_json: str,
+    exemplar_diffs: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "text": f"GRAMMAR RULE DEFINITION\n\n{rule_def}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"EXEMPLAR `parser: handle <rule>` DIFFS\n\n{exemplar_diffs}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"AST CLASS DESIGN (from previous step)\n\n{ast_design_json}",
+        },
+    ]
+
+
+def build_unmodeled_retry_blocks(
+    *,
+    rule_def: str,
+    ast_design_json: str,
+    method_source: str,
+    exemplar_diffs: str,
+    pytest_tail: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "text": f"GRAMMAR RULE DEFINITION\n\n{rule_def}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": f"EXEMPLAR `parser: handle <rule>` DIFFS\n\n{exemplar_diffs}",
+            "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": (
+                f"PREVIOUS AST DESIGN\n\n{ast_design_json}\n\n"
+                f"PREVIOUS TRANSFORMER METHOD\n\n{method_source}\n\n"
+                f"PYTEST OUTPUT (last 1500 chars)\n\n{pytest_tail}"
+            ),
+        }
+    ]
