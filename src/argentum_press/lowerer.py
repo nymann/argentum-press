@@ -916,6 +916,11 @@ class KotlinLowerer:
         return f"EffectPatterns.surveil({amount})"
 
     @effect.register
+    def _(self, e: ast.MillExpression) -> str:
+        amount = _number_int(e.quantity)
+        return f"EffectPatterns.mill({amount})"
+
+    @effect.register
     def _(self, e: ast.ReturnExpression) -> str:
         target_str = self._target_from_expression(e.subject)
         return f"Effects.ReturnToBattlefield({target_str})"
