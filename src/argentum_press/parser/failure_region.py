@@ -27,6 +27,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any, Callable
+
+
+ParseFn = Callable[..., Any]
+"""Shape of :func:`argentum_press.parser.transformer.parse`. Accepts the
+oracle text and a ``name=`` kwarg, returns a ``ParseResult``. Pulled out
+as a type so tests can inject a fast in-memory fake instead of paying
+the ~10s cost of compiling the real grammar."""
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -136,7 +144,7 @@ def _is_parseable(message: str | None) -> bool:
 
 
 def find_parse_failure_region(
-    oracle_text: str, *, name: str = ""
+    oracle_text: str, *, name: str = "", parse_fn: ParseFn | None = None,
 ) -> FailureRegion:
     """Locate the failure region in ``oracle_text``.
 
@@ -162,10 +170,12 @@ def find_parse_failure_region(
     practice; pathological cases just return a smaller ``k``, which
     is still strictly more information than the full-text label.
     """
-    # Local import: this module is loaded by the parser package; the
-    # parse() entry point lives inside transformer.py and pulling it in
-    # at module scope risks circular imports during package init.
-    from argentum_press.parser.transformer import parse
+    if parse_fn is None:
+        # Local import: this module is loaded by the parser package; the
+        # parse() entry point lives inside transformer.py and pulling it
+        # in at module scope risks circular imports during package init.
+        from argentum_press.parser.transformer import parse as parse_fn
+    parse = parse_fn
 
     text = oracle_text.strip()
     calls = 0

@@ -49,15 +49,25 @@ def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line for line in text.splitlines())
 
 
-def _format_parse_error_block(details: Any) -> str | None:
+def _format_parse_error_block(
+    details: Any, *, oracle_text: str = "", card_name: str = "",
+) -> str | None:
     """Format a :class:`ParseErrorDetails` into the prompt-ready string the
     orchestrator used to compute inline. Returns None when ``details`` is
     None (which is the case for unmodeled-rule/lark-error gaps that don't
-    carry rich Lark exception data)."""
+    carry rich Lark exception data).
+
+    Also splices in a per-sentence failure-region diagnostic when
+    ``oracle_text`` is provided. Earley's ``pos_in_stream`` is ``-1`` for
+    UnexpectedEOF, so without this the downstream LLM has to find the
+    failing phrase by trial-and-error. The diagnostic identifies which
+    sentence(s) fail in isolation, and inside each, the longest prefix
+    that Lark still accepts — collapsing what was 30+ freeform turns
+    into one deterministic ~1s probe."""
     if details is None:
         return None
     expected = ", ".join(details.expected[:30]) or "(empty - Earley parser didn't expose a candidate set)"
-    return (
+    block = (
         f"  position:    line {details.line}, col {details.column} (pos_in_stream={details.pos_in_stream})\n"
         f"  unexpected:  {details.unexpected}\n"
         f"  expected:    {expected}\n"
@@ -68,6 +78,17 @@ def _format_parse_error_block(details: Any) -> str | None:
         f"  full lark message:\n"
         f"{_indent(details.raw_message, '    ')}"
     )
+    if oracle_text.strip():
+        try:
+            from argentum_press.parser.failure_region import find_parse_failure_region
+            fr = find_parse_failure_region(oracle_text, name=card_name)
+        except Exception as exc:  # noqa: BLE001
+            # Diagnostic-only: never let this block the orchestrator.
+            block += f"\n  failure-region: (analysis failed: {exc!r})"
+        else:
+            if not fr.fully_parses:
+                block += "\n  failure-region:\n" + _indent(fr.render_for_prompt(), "  ")
+    return block
 
 
 def _read_filters() -> tuple[set[str], set[str] | None]:
@@ -167,7 +188,11 @@ def main(argv: list[str]) -> int:
             if card_ast is not None:
                 ast_text = format_ast(card_ast)
 
-    pe_block = _format_parse_error_block(report.gap.parse_details)
+    pe_block = _format_parse_error_block(
+        report.gap.parse_details,
+        oracle_text=report.gap.oracle_text,
+        card_name=report.gap.card_name,
+    )
 
     _emit({
         "type": "result",
