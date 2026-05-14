@@ -1257,3 +1257,6 @@ class KotlinLowerer:
         # argentum-engine has no PutInZone DSL surface yet; emit a stub so
         # the lowerer moves past this AST class to the next gap.
         return "Effects.PutInZone()"
+    @effect.register  # ast=ast.AddManaExpression
+    def _(self, expr: ast.AddManaExpression) -> str:
+        return 'AddManaEffect()'
