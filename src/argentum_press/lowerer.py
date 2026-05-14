@@ -992,6 +992,13 @@ class KotlinLowerer:
             # emit a stub call to move the gap past RatherStatement to whatever
             # the preferred/alternative sub-statements surface next.
             return ["Effects.RatherThan()"]
+        if isinstance(stmt, ast.WhereStatement):
+            # "<body>, where <definition>" — elaborates a variable used in the
+            # body (e.g. "surveil X, where X is the number of counters on it").
+            # argentum-engine has no DSL surface for binding-style elaborations;
+            # both AST fields are Optional Statement, so emit a stub to move the
+            # gap past WhereStatement to whatever the inner statements surface.
+            return ["Effects.Where()"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
