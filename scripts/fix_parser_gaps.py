@@ -794,7 +794,13 @@ def _find_gap_subprocess(
             continue
         et = event.get("type")
         if et == "log":
-            stamp(f"{DIM}{event.get('msg', '')}{RESET}")
+            # Map the worker's named color → local ANSI constant; default
+            # is DIM. _ansi() already gates on TTY/NO_COLOR upstream, so
+            # color names safely degrade to empty strings off-tty.
+            color_name = event.get("color")
+            color_map = {"green": GREEN, "red": RED, "yellow": YELLOW, "cyan": CYAN}
+            prefix = color_map.get(color_name, DIM)
+            stamp(f"{prefix}{event.get('msg', '')}{RESET}")
         elif et == "result":
             result_event = event
 

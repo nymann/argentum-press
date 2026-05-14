@@ -93,17 +93,25 @@ def main(argv: list[str]) -> int:
         )
         _log(f"fetched {len(cards)} cards (catalog cache={cache_state})")
 
-        def _progress(scanned: int, total: int, card: dict) -> None:
-            # One line per card before parse so the user sees what's being
-            # worked on. The "parsing..." suffix flags cards that aren't in
-            # the cache so the user immediately knows which entry is about
-            # to sit through a 1-40s Earley parse vs which one will scroll
-            # past instantly.
-            tag = "" if is_cached(card) else "  (parsing...)"
-            _log(f"[{scanned:>3}/{total}] {card['name']}{tag}")
+        def _before(scanned: int, total: int, card: dict) -> None:
+            # Only emit a "parsing..." line for cards that aren't in the
+            # cache — those are the ones about to sit through a 1-40s
+            # Earley parse and the user wants to see what's blocking.
+            # Cache hits go straight to the after-parse checkmark below.
+            if is_cached(card):
+                return
+            _log(f"[{scanned:>3}/{total}] {card['name']}  (parsing...)")
+
+        def _after(scanned: int, total: int, card: dict, gap: Any) -> None:
+            mark = "✗" if gap is not None else "✓"
+            color = "red" if gap is not None else "green"
+            _log(f"[{scanned:>3}/{total}] {mark} {card['name']}", color=color)
 
         _log("scanning for first gap...")
-        report = find_first_gap(cards, project_dir, set_code, progress=_progress)
+        report = find_first_gap(
+            cards, project_dir, set_code,
+            progress=_before, on_complete=_after,
+        )
 
         if report.gap is None:
             _emit({
