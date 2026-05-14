@@ -812,6 +812,11 @@ class KotlinLowerer:
         return f"Effects.ReturnToBattlefield({target_str})"
 
     @effect.register
+    def _(self, e: ast.DestroyExpression) -> str:
+        target_str = self._target_from_expression(e.subject)
+        return f"Effects.Destroy({target_str})"
+
+    @effect.register
     def _(self, e: ast.LookExpression) -> str:
         # "look at <subject>" — the rich AST drops the subject entirely; we
         # emit a stub call so the gap moves past LookExpression to whatever
