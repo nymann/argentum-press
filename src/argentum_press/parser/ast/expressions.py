@@ -691,3 +691,10 @@ class PayManaExpression(EffectExpression):
 
     player: Expression | None = None
     mana: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UpToOneTargetCreatureExpression(TargetExpression):
+    """`up to one target creature` — a targeting expression selecting at most one creature."""
+
+    pass
