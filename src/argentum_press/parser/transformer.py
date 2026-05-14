@@ -1100,6 +1100,12 @@ class CardTransformer(Transformer):
     def referencedecorator(self, items):
         return items[0]
 
+    def controlmodifier(self, items):
+        # "under <ref> control" — surface marker on enterzoneexpression
+        # ("entered the battlefield under your control"). The parent doesn't
+        # consume it; downstream only cares about presence.
+        return None
+
     def targetdecorator(self, items):
         # "target" or "<value> target"
         if not items:
