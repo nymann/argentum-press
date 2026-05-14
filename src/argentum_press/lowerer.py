@@ -870,6 +870,15 @@ class KotlinLowerer:
         return "Effects.PreventDamage()"
 
     @effect.register
+    def _(self, e: ast.RedirectAllDamageExpression) -> str:
+        # "all <damage> that would be dealt to <a> is dealt to <b> instead" —
+        # surface-only stub mirroring PreventDamageExpression; the rich AST
+        # carries the matched children as descriptors only, so we emit a stub
+        # call so the gap moves past RedirectAllDamageExpression to whatever
+        # the next unhandled node in this card is.
+        return "Effects.RedirectAllDamage()"
+
+    @effect.register
     def _(self, e: ast.AddRemoveExpression) -> str:
         # "put N +1/+1 counters on X" / "remove counters from X" — Reed left
         # the body fields unmodeled (subject is the only carried field, often
