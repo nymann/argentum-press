@@ -653,3 +653,11 @@ class LoseLifeExpression(EffectExpression):
     amount: ValueExpression | None = None
     timing: Expression | None = None
     past_tense: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class EqualToExpression(ValueComparisonExpression):
+    """``<effect>? equal to <value>`` — comparison expression asserting equality to a value or declaration."""
+
+    effect: EffectExpression | None = None
+    value: Expression | None = None
