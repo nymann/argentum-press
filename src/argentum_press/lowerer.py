@@ -700,6 +700,8 @@ class KotlinLowerer:
             return tuple(out2)
         if isinstance(stmt, ast.IfStatement):
             return self._effects_from_statement(stmt.consequence)
+        if isinstance(stmt, ast.AsStatement):
+            return self._effects_from_statement(stmt.consequence)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
