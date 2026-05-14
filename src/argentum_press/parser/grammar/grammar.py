@@ -390,6 +390,7 @@ def getGrammar():
         uptoexpression: "up" "to" valueterm
         !thatmanyexpression: valuefrequency? "that" ("much"|"many")
         !numberofexpression: ("a"|"the"|"any") "number" "of" declarationorreference
+        | ("a"|"the"|"any") "number" "of" countertype "counter"["s"] "on" declarationorreference
         timesexpression: "times" statement? //[example: the number of times ~ was kicked]
         valueterm: valuenumber | valuecardinal | valueordinal | valuefrequency | valuecustom
         valuenumber: NUMBER
