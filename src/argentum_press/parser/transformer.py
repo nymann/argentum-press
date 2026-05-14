@@ -1638,6 +1638,13 @@ class CardTransformer(Transformer):
         operand = items[0] if items else Name(name="")
         return ChoiceExpression(operand=operand)
 
+    def controlsexpression(self, items):
+        # playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
+        # Surface-only stub mirroring controlpostfix: keep the controller; the
+        # controlled declaration is dropped until a card needs it.
+        controller = items[0] if len(items) == 2 else NameReference(antecedent=Name(name="you"))
+        return ControlExpression(controller=controller)
+
     def countertype(self, items):
         # `countertype: ptchangeexpression | WORD`. Pass the matched child
         # through — its surface form (PTExpression or Name) is what consumers
