@@ -564,7 +564,7 @@ def getGrammar():
         returnexpression: playerdeclref? "return"["s"] declarationorreference atrandomexpression? ("from" zonedeclarationexpression)? "to" zonedeclarationexpression genericdeclarationexpression? zoneplacementmodifier?//[TODO]
 
         putinzoneexpression: playerdeclref? "put"["s"] (declarationorreference | cardexpression) (locationexpression | "back" | zoneplacementmodifier) (objectdefinition | playerdefinition | zoneplacementmodifier)?
-        putcounterexpression: playerdeclref? "put"["s"] ("a"|valueexpression) countertype "counter"["s"] "on" declarationorreference
+        putcounterexpression: playerdeclref? "put"["s"] ("a"["n"]|valueexpression) countertype "counter"["s"] "on" declarationorreference
         | playerdeclref? "put"["s"] possessiveterm countertype "counter"["s"] "on" declarationorreference
         removecounterexpression: playerdeclref? "remove"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference
         movecounterexpression: playerdeclref? "move"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference ("onto" | "to") declarationorreference
