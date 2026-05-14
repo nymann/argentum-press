@@ -801,6 +801,8 @@ class KotlinLowerer:
             return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AsStatement):
             return self._effects_from_statement(stmt.consequence)
+        if isinstance(stmt, ast.AsLongAsStatement):
+            return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AtStatement):
             # "at the beginning of <step>, <Y>" — a phase-based trigger. The
             # rich AST carries the trigger phase as a surface DescriptionExpression
