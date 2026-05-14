@@ -989,6 +989,14 @@ class KotlinLowerer:
         # unhandled node is.
         return "Effects.Control()"
 
+    @effect.register
+    def _(self, e: ast.ConniveExpression) -> str:
+        # "<player>? connive[s]" — surface-only stub mirroring
+        # GainLoseExpression; the rich AST drops subject/amount, so we emit
+        # a stub call so the gap moves past ConniveExpression to whatever
+        # the next unhandled node is.
+        return "Effects.Connive()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
