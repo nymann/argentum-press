@@ -136,6 +136,32 @@ class ToolCallResult:
 _CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
 
 
+def _create_with_backoff(
+    client: ClientLike, *, _max_retries: int = 4, _base_delay: float = 4.0, **kwargs: Any
+) -> Any:
+    """Wrap ``client.messages.create`` with exponential backoff on 429.
+
+    The subscription auth path frequently 429s when another Claude session
+    is consuming quota concurrently. We retry up to ``_max_retries`` times
+    with delays ``[4, 8, 16, 32]`` seconds. Anything else (auth, 500, etc.)
+    propagates immediately.
+    """
+    import time
+    delay = _base_delay
+    for attempt in range(_max_retries):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            is_429 = ("429" in msg or "rate_limit" in msg) and attempt < _max_retries - 1
+            if not is_429:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    # Unreachable — the loop either returns or re-raises.
+    raise RuntimeError("playbook: backoff loop exhausted")
+
+
 def _read_oauth_token_from_keychain() -> str | None:
     """Pull the Claude Code OAuth access token from macOS keychain if present.
 
@@ -225,7 +251,8 @@ def call_tool(
     user_content: list[dict[str, Any]] = list(static_context_blocks)
     user_content.append({"type": "text", "text": user_prompt})
 
-    response = c.messages.create(
+    response = _create_with_backoff(
+        c,
         model=model,
         max_tokens=max_tokens,
         system=[{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}],

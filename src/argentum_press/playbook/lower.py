@@ -38,6 +38,18 @@ L5_MODEL = "claude-opus-4-7"
 L9_MODEL = "claude-opus-4-7"
 
 
+def _resolve_models(override: str | None) -> tuple[str, str, str, str]:
+    """Resolve (L3, L4, L5, L9) model ids.
+
+    ``override`` (when set) replaces L4 / L5 / L9; L3 stays on haiku because
+    it's the cached cheap-summary step. Useful when opus is rate-limited on
+    the subscription and the demo needs to keep moving.
+    """
+    if override:
+        return L3_MODEL, override, override, override
+    return L3_MODEL, L4_MODEL, L5_MODEL, L9_MODEL
+
+
 # ---------------------------------------------------------------------------
 # Outcome
 # ---------------------------------------------------------------------------
@@ -124,6 +136,7 @@ def run(
     oracle_text: str = "",
     ast_text: str | None = None,
     verbose: bool = True,
+    model_override: str | None = None,
 ) -> PlaybookResult:
     """End-to-end lower-gap playbook.
 
@@ -133,6 +146,7 @@ def run(
     """
     repo = repo or context.REPO
     pytest_runner = pytest_runner or run_pytest
+    l3_model, l4_model, l5_model, l9_model = _resolve_models(model_override)
     steps: list[StepLog] = []
     result = PlaybookResult(label=label, outcome="pending")
 
@@ -198,7 +212,7 @@ def run(
                 system_prompt=llm.SYSTEM_PROMPT,
                 static_context_blocks=blocks,
                 user_prompt=user_prompt,
-                model=L3_MODEL,
+                model=l3_model,
                 client=client,
                 max_tokens=512,
             )
@@ -238,7 +252,7 @@ def run(
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=strategy_blocks,
             user_prompt=strategy_user,
-            model=L4_MODEL,
+            model=l4_model,
             client=client,
             max_tokens=512,
         )
@@ -288,7 +302,7 @@ def run(
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=plan_blocks,
             user_prompt=plan_user,
-            model=L5_MODEL,
+            model=l5_model,
             client=client,
             max_tokens=2048,
         )
@@ -352,7 +366,7 @@ def run(
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=retry_blocks,
             user_prompt=retry_user,
-            model=L9_MODEL,
+            model=l9_model,
             client=client,
             max_tokens=2048,
         )
@@ -466,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--oracle-text", default="", help="Optional: oracle text for trace context")
     p.add_argument("--trace-out", type=Path, default=None,
                    help="Write the playbook trace JSON to this path")
+    p.add_argument("--model-override", default=None,
+                   help="Force every LLM step (except L3 summary) to use this "
+                        "model. Useful when opus is rate-limited; e.g. "
+                        "--model-override=claude-haiku-4-5-20251001.")
     args = p.parse_args(argv)
 
     # Make sure the parse cache stays segregated; the spec wants the env var
@@ -480,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         project_dir=args.project_dir,
         card_name=args.card_name,
         oracle_text=args.oracle_text,
+        model_override=args.model_override,
     )
     print()
     print(f"=== outcome: {result.outcome} ===")
