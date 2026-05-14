@@ -963,6 +963,15 @@ class KotlinLowerer:
             # marker clause with no fields; argentum-engine has no surface
             # for it yet. Emit a stub so the gap moves past this AST class.
             return ["Effects.ManaSpendableAnyType()"]
+        if isinstance(stmt, ast.WheneverStatement):
+            # "whenever <conditional>, <consequence>" as a triggered ability.
+            # The rich AST carries the conditional (Statement | Expression),
+            # consequence (Statement) and an `inverted` flag as surface
+            # fields; argentum-engine's Triggers DSL only exposes concrete
+            # TriggerSpec values keyed off specific events, with no generic
+            # 'whenever <expr>' surface. Emit a stub so the gap moves past
+            # WheneverStatement to whatever's inside.
+            return ["Effects.WheneverTrigger()"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
