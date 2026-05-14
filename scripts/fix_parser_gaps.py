@@ -1068,6 +1068,7 @@ def _find_gap_subprocess(
     set_code: str, project_dir: Path,
     *,
     scan_jsonl_path: Path | None = None,
+    skip_cards: set[str] | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Run gap-finding in a fresh subprocess so the agent's last edits take
     effect. Returns ``(gap, ast_text, parse_error_block)`` — ``gap`` is None
@@ -1088,20 +1089,31 @@ def _find_gap_subprocess(
     When ``scan_jsonl_path`` is set, every NDJSON line emitted by the worker
     is mirrored verbatim into that file — separate from the agent transcript
     so the scan timeline can be reconstructed independently.
+
+    ``skip_cards`` is piped to the worker as ``{"skip_cards": [...]}`` on
+    stdin so the next scan surfaces a different card — the capture-batch
+    hook. None / empty means "no skip set" and the worker walks from the
+    top.
     """
     cmd = [
         "uv", "run", "python", "-m", "argentum_press._fix_loop_gap",
         set_code, str(project_dir),
     ]
+    stdin_payload = (
+        json.dumps({"skip_cards": sorted(skip_cards)}) if skip_cards else ""
+    )
     proc = subprocess.Popen(
         cmd,
         cwd=REPO,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
     )
-    assert proc.stdout and proc.stderr
+    assert proc.stdin and proc.stdout and proc.stderr
+    proc.stdin.write(stdin_payload)
+    proc.stdin.close()
 
     scan_fh = scan_jsonl_path.open("a", encoding="utf-8") if scan_jsonl_path else None
     result_event: dict[str, Any] | None = None
@@ -1184,6 +1196,67 @@ def _gaps_dir() -> Path:
 GAPS_DIR = _gaps_dir()
 
 
+def _auto_slug(gap: Any) -> str:
+    """Derive a filename-safe slug from ``gap.label``.
+
+    Lower-kind labels are dotted classpaths (e.g.
+    ``argentum_press.parser.ast.expressions.ChooseExpression``); we keep the
+    final component and prefix with ``lower-``. Other kinds keep the full
+    label (``parse-error:<EOF>@t...``, ``unmodeled-rule:abilityword``).
+    The result is lowercased and non-``[a-z0-9-]`` runs collapse to a single
+    dash so the slug is safe as a path component.
+    """
+    if gap.kind == "lower":
+        bare = gap.label.split(".")[-1]
+        raw = f"lower-{bare}"
+    else:
+        raw = gap.label
+    slug = re.sub(r"[^a-z0-9-]+", "-", raw.lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "gap"
+
+
+def _unique_slug(base: str, gaps_dir: Path) -> str:
+    """Return ``base`` if ``<base>.json`` is free, else the first
+    ``<base>-N.json`` (N starting at 2) that isn't taken."""
+    if not (gaps_dir / f"{base}.json").exists():
+        return base
+    n = 2
+    while (gaps_dir / f"{base}-{n}.json").exists():
+        n += 1
+    return f"{base}-{n}"
+
+
+def _save_captured_gap(
+    *,
+    set_code: str,
+    gap: Any,
+    ast_text: str | None,
+    pe_block: str | None,
+    slug: str,
+    gaps_dir: Path,
+) -> Path:
+    """Persist a captured-gap JSON payload under ``gaps_dir/<slug>.json`` and
+    return the path. Shared by ``--capture-gap`` (single, user-named slug)
+    and ``--capture-batch`` (auto-named per-iteration slugs)."""
+    gaps_dir.mkdir(parents=True, exist_ok=True)
+    out = gaps_dir / f"{slug}.json"
+    payload: dict[str, Any] = {
+        "set_code": set_code,
+        "gap": {
+            "kind": gap.kind,
+            "label": gap.label,
+            "card_name": gap.card_name,
+            "oracle_text": gap.oracle_text,
+        },
+        "ast_text": ast_text,
+        "parse_error_block": pe_block,
+        "ref_commit": git("rev-parse", "HEAD", check=False) or "",
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return out
+
+
 def _capture_gap(set_code: str, project_dir: Path, slug: str) -> int:
     """Run the gap finder once and persist the result under
     ``experiments/gaps/<slug>.json``.
@@ -1204,25 +1277,53 @@ def _capture_gap(set_code: str, project_dir: Path, slug: str) -> int:
         stamp(f"{YELLOW}no gap found; nothing to capture.{RESET}")
         return 1
 
-    gaps_dir = _gaps_dir()
-    gaps_dir.mkdir(parents=True, exist_ok=True)
-    out = gaps_dir / f"{slug}.json"
-    payload: dict[str, Any] = {
-        "set_code": set_code,
-        "gap": {
-            "kind": gap.kind,
-            "label": gap.label,
-            "card_name": gap.card_name,
-            "oracle_text": gap.oracle_text,
-        },
-        "ast_text": ast_text,
-        "parse_error_block": pe_block,
-        "ref_commit": git("rev-parse", "HEAD", check=False) or "",
-    }
-    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    out = _save_captured_gap(
+        set_code=set_code, gap=gap, ast_text=ast_text, pe_block=pe_block,
+        slug=slug, gaps_dir=_gaps_dir(),
+    )
     stamp(f"{GREEN}captured gap '{slug}' → {out.relative_to(REPO)}{RESET}")
     stamp(f"  kind={gap.kind}  card={gap.card_name}  label={gap.label.splitlines()[0]}")
     return 0
+
+
+def _capture_batch(set_code: str, project_dir: Path, n: int) -> int:
+    """Capture ``n`` distinct gaps in one command.
+
+    Each iteration scans the set with the previously-captured card names
+    blacklisted, picks the auto-slug from the gap label, and writes the
+    JSON payload via :func:`_save_captured_gap`. Stops early when the set
+    is exhausted (every remaining card parses + lowers, or every gap has
+    already been captured)."""
+    print(f"{BOLD}=== capture-batch n={n} ==={RESET}", flush=True)
+    gaps_dir = _gaps_dir()
+    skip: set[str] = set()
+    captured: list[str] = []
+    for i in range(1, n + 1):
+        print(f"\n{BOLD}--- batch {i}/{n} ---{RESET}", flush=True)
+        try:
+            gap, ast_text, pe_block = _find_gap_subprocess(
+                set_code, project_dir, skip_cards=skip,
+            )
+        except GapSubprocessError as e:
+            stamp(f"{RED}{e}{RESET}")
+            return 2
+        if gap is None:
+            stamp(f"{YELLOW}set clean after {len(captured)} capture(s); stopping.{RESET}")
+            break
+        base = _auto_slug(gap)
+        slug = _unique_slug(base, gaps_dir)
+        out = _save_captured_gap(
+            set_code=set_code, gap=gap, ast_text=ast_text, pe_block=pe_block,
+            slug=slug, gaps_dir=gaps_dir,
+        )
+        stamp(f"{GREEN}captured '{slug}' → {out.relative_to(REPO)}{RESET}")
+        stamp(f"  kind={gap.kind}  card={gap.card_name}  label={gap.label.splitlines()[0]}")
+        captured.append(slug)
+        skip.add(gap.card_name)
+    print(f"\n{BOLD}captured {len(captured)} gap(s):{RESET}", flush=True)
+    for slug in captured:
+        print(f"  - {slug}")
+    return 0 if captured else 1
 
 
 def _load_gap(slug: str) -> dict[str, Any]:
@@ -1411,6 +1512,11 @@ def main(argv: list[str] | None = None) -> int:
              "and exit without invoking claude.",
     )
     ap.add_argument(
+        "--capture-batch", dest="capture_batch", type=int, default=None,
+        help="Capture N distinct gaps in one command, auto-naming each. "
+             "Mutually exclusive with --capture-gap.",
+    )
+    ap.add_argument(
         "--prompt-variant", type=str, default="baseline",
         help="Name under prompts/ to use for the agent prompt (default: baseline).",
     )
@@ -1431,11 +1537,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if args.capture_gap is not None and args.capture_batch is not None:
+        print(
+            f"{RED}--capture-gap and --capture-batch are mutually exclusive.{RESET}",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.capture_gap is not None:
         if not args.set_code:
             print(f"{RED}--capture-gap requires set_code positional.{RESET}", file=sys.stderr)
             return 2
         return _capture_gap(args.set_code, args.project_dir, args.capture_gap)
+
+    if args.capture_batch is not None:
+        if not args.set_code:
+            print(f"{RED}--capture-batch requires set_code positional.{RESET}", file=sys.stderr)
+            return 2
+        if args.capture_batch < 1:
+            print(f"{RED}--capture-batch N must be >= 1.{RESET}", file=sys.stderr)
+            return 2
+        return _capture_batch(args.set_code, args.project_dir, args.capture_batch)
 
     if args.replay is not None and args.record is None:
         print(
