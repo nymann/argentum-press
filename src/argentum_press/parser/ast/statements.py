@@ -303,3 +303,10 @@ class CostReductionStatement(Statement):
 
     subject: Expression | None = None
     amount: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ManaRetentionStatement(Statement):
+    """``you do not lose unspent red mana as steps and phases end`` — prevents unspent red mana from emptying at phase/step boundaries."""
+
+    pass
