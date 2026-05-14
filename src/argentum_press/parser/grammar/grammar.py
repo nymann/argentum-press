@@ -486,6 +486,7 @@ def getGrammar():
 
         reference: neutralreference | selfreference | namereference
         neutralreference: "it" | "them" | "he" | "him" | "she" | "her"
+        | "up" "to" "one" "target" "creature" -> uptoonetargetcreature
         selfreference: "itself" | "himself" | "herself" -> selfreference
         namereference: NAMEREFSYMBOL
 
