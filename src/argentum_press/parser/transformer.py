@@ -100,6 +100,7 @@ from argentum_press.parser.ast import (
     EscalateAbility,
     EternalizeAbility,
     EvokeAbility,
+    ExceptStatement,
     ExileExpression,
     Expression,
     ExpressionStatement,
@@ -1467,6 +1468,10 @@ class CardTransformer(Transformer):
     def asstatement(self, items):
         # "as" statement "," statement — e.g. "As ~ enters, look at...".
         return AsStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def exceptstatement(self, items):
+        # statement ","? "except" (("by"|"for") genericdeclarationexpression | statement)
+        return ExceptStatement(conditional=items[0], consequence=items[1])
 
     def atstatement(self, items):
         return AtStatement(conditional=items[0], consequence=items[1], inverted=False)

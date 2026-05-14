@@ -190,6 +190,12 @@ class UnlessStatement(ConditionalStatement):
 
 
 @dataclass(frozen=True, slots=True)
+class ExceptStatement(ConditionalStatement):
+    conditional: Statement | Expression
+    consequence: Statement | Expression
+
+
+@dataclass(frozen=True, slots=True)
 class ForStatement(ConditionalStatement):
     """``for each X, …``. Reed left this stubbed."""
 
