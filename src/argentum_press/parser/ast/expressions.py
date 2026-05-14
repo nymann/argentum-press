@@ -591,3 +591,13 @@ class RandomOrderPlacement(Expression):
     """Marker for ``in a random order`` zone-placement modifier."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class PutInZoneExpression(EffectExpression):
+    """Put a card or declaration into a zone (e.g. ``put ~ onto the battlefield``)."""
+
+    subject: Expression
+    destination: Expression
+    player: Expression | None = None
+    modifier: Expression | None = None
