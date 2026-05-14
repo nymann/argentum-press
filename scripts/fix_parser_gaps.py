@@ -1813,7 +1813,7 @@ def _supervisor_dispatch(
 
         # Pytest gate before re-launch.
         stamp(f"{BOLD}[supervisor] pytest-gating the repair...{RESET}")
-        pytest_rc, _ = run_pytest(REPO)
+        pytest_rc, _ = run_pytest()
         if pytest_rc != 0:
             stamp(
                 f"{RED}[supervisor] pytest red after repair "
