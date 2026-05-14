@@ -235,14 +235,29 @@ class LowerPlaybookFixer(GapFixer):
             verbose=True,
             pool=self._pool,
         )
-        return _wrap_playbook_outcome(
+        outcome = _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say
         )
+        if outcome.outcome_tag in _LOWER_DEFINITIVE_ABORTS:
+            self._say(
+                f"playbook {outcome.outcome_tag}: structured path exhausted, "
+                f"falling back to freeform"
+            )
+            return self._fallback.fix(gap, ctx)
+        return outcome
 
 
 _PARSE_ERROR_DEFINITIVE_ABORTS: frozenset[str] = frozenset({
     "playbook_aborted-p4-duplicate",
     "playbook_aborted-p8-duplicate",
+    "playbook_aborted-classify-unchanged",
+})
+
+_LOWER_DEFINITIVE_ABORTS: frozenset[str] = frozenset({
+    # L7b / L10b — pytest accepted the edit but live classify of the
+    # originating card still produces the same lower:<class> gap. The
+    # structured path has nothing more to try; freeform can take a swing
+    # at the same context with more flexibility.
     "playbook_aborted-classify-unchanged",
 })
 

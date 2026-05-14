@@ -453,3 +453,79 @@ def test_driver_aborts_on_libcst_failure(tmp_path: Path):
     finally:
         lowerer_path.write_text(original_text, encoding="utf-8")
     assert result.outcome == "aborted-l6"
+
+
+# ---------------------------------------------------------------------------
+# L7b live-classify gate (catches pytest-green-but-live-card-still-broken)
+# ---------------------------------------------------------------------------
+
+
+def test_driver_aborts_when_live_classify_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    # pytest passes (green runner) but the originating card's live
+    # classify still produces the same lower:<class> gap label. The
+    # gate must revert the lowerer edit and abort with
+    # aborted-classify-unchanged so the strategy chain can fall back
+    # to freeform.
+    monkeypatch.setattr(
+        lower, "_live_card_still_failing_lower", lambda **_kw: True
+    )
+
+    blocks = [
+        _FakeBlock(type="tool_use", name="emit_ast_summary", input={
+            "summary": "Awaken N", "mtg_term": "awaken", "similar_handlers": [],
+        }),
+        _FakeBlock(type="tool_use", name="emit_strategy", input={
+            "strategy": "stub", "target_dsl_symbol": "Effects.Awaken",
+            "justification": "no engine surface yet",
+        }),
+        _FakeBlock(type="tool_use", name="emit_plan", input={
+            "anchor": {"pattern": "register-handler", "dispatcher": "ability"},
+            "body_python": (
+                "@ability.register\n"
+                "def _(self, ability: ast.AwakenAbility) -> str:\n"
+                "    raise EmitterGap(ability)\n"
+            ),
+            "new_imports": [],
+        }),
+    ]
+    client = _ScriptedClient(blocks)
+
+    lowerer_path = context.LOWERER
+    original_text = lowerer_path.read_text(encoding="utf-8")
+    try:
+        result = lower.run(
+            label="argentum_press.parser.ast.abilities.AwakenAbility",
+            project_dir=tmp_path,
+            client=client,
+            pytest_runner=_green_pytest,
+            cache_root=tmp_path / "cache",
+            card_name="Fake Card",
+            oracle_text="Awaken 2.",
+            verbose=False,
+        )
+    finally:
+        # Defensive restore: the gate should have reverted via edits.revert,
+        # but if a test failure interrupted the flow before that point the
+        # tree shouldn't be left dirty.
+        lowerer_path.write_text(original_text, encoding="utf-8")
+    assert result.outcome == "aborted-classify-unchanged", result.as_json()
+    # The lowerer must end up unchanged from where it started — the gate
+    # is responsible for reverting before returning.
+    assert lowerer_path.read_text(encoding="utf-8") == original_text
+
+
+def test_live_classify_helper_noop_when_card_data_missing():
+    # No card_name + oracle_text → the helper should return False
+    # (no work to do, defaults to "progress made"). Keeps the existing
+    # happy-path tests from spawning subprocesses unnecessarily.
+    assert lower._live_card_still_failing_lower(
+        card_name="", oracle_text="", label="some.label",
+    ) is False
+    assert lower._live_card_still_failing_lower(
+        card_name="Fake", oracle_text="", label="some.label",
+    ) is False
+    assert lower._live_card_still_failing_lower(
+        card_name="", oracle_text="text", label="some.label",
+    ) is False

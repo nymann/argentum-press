@@ -65,6 +65,77 @@ def run_pytest(repo: Path) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
+# Live-card classify gate (L7b / L10b)
+# ---------------------------------------------------------------------------
+#
+# pytest accepts dead-code additions to lowerer.py (a new `if isinstance(...):
+# return "..."` after an unreachable `return` line, for instance — exactly
+# the misfire that produced three commits in a row for Common Crook's
+# DiesExpression). The live-card classify gate runs *after* pytest in a
+# fresh subprocess (singledispatch's caching makes in-process re-import
+# unreliable for the lowerer) and checks whether the originating card
+# still produces the same lower:<ast-class> gap. If yes, the edit was a
+# no-op for live input — revert and surface aborted-classify-unchanged so
+# the strategy chain can fall back to freeform.
+
+
+def _live_card_still_failing_lower(
+    *, card_name: str, oracle_text: str, label: str
+) -> bool:
+    """True iff a fresh classify of ``card_name`` still produces ``label``.
+
+    Returns False on parse_error / clean classify / unexpected
+    classifications — anything *other* than "still the same lower gap"
+    counts as progress (different gap kind = the loop will pick it up
+    next iteration; clean classify = fully fixed).
+
+    Returns True on subprocess crashes too: a crash post-edit means the
+    edit is structurally wrong, and we'd rather revert + escalate than
+    commit and let the next iteration's gap scan die.
+    """
+    if not card_name or not oracle_text:
+        return False
+    probe = (
+        "import json, sys\n"
+        "from argentum_press.parser import parse\n"
+        "from argentum_press.lowerer import KotlinLowerer\n"
+        "from argentum_press.classify import classify, Bucket1, Bucket2\n"
+        f"r = parse({oracle_text!r}, name={card_name!r})\n"
+        "if r.error is not None:\n"
+        "    print(json.dumps({'result': 'parse-error', 'label': r.error.message}))\n"
+        "    sys.exit(0)\n"
+        "try:\n"
+        "    c = classify(r.ast, KotlinLowerer())\n"
+        "except BaseException as exc:\n"
+        "    print(json.dumps({'result': 'crash', 'exception': type(exc).__name__, 'message': str(exc)}))\n"
+        "    sys.exit(0)\n"
+        "if isinstance(c, Bucket1):\n"
+        "    print(json.dumps({'result': 'ok'}))\n"
+        "else:\n"
+        "    print(json.dumps({'result': 'bucket2', 'missing_node': c.missing_node}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=context.REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ},  # preserve ARGENTUM_PARSE_CACHE etc.
+    )
+    if proc.returncode != 0:
+        return True
+    try:
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return True
+    if out["result"] == "bucket2" and out.get("missing_node") == label:
+        return True
+    if out["result"] == "crash":
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -333,6 +404,30 @@ def run(
     _say(f"L7: pytest rc={rc}")
 
     if rc == 0:
+        # ---- L7b: live-card classify gate ------------------------------
+        # pytest is the unit-test gate; it doesn't actually classify the
+        # card that produced the gap. A lowerer edit that's syntactically
+        # fine but semantically a no-op (dead branch, wrong AST class
+        # pattern, etc.) passes pytest and dead-ends the live classifier
+        # next iteration — that's how we ended up with four redundant
+        # DiesExpression commits before the no_progress check fired.
+        # Re-classify the originating card here so we catch this in-
+        # playbook and revert before committing.
+        t0 = time.monotonic()
+        live_failed = _live_card_still_failing_lower(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        _log_step(
+            steps, "L7b", "orch", t0,
+            card_name=card_name, label=label, still_failing=live_failed,
+        )
+        _say(f"L7b: live-card classify still_failing={live_failed}")
+        if live_failed:
+            edits.revert(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.final_plan = plan
+            result.steps = steps
+            return result
         result.outcome = "applied"
         result.final_plan = plan
         result.steps = steps
@@ -399,6 +494,21 @@ def run(
     _log_step(steps, "L7-retry", "orch", t0, returncode=rc2, tail=_short(tail2, 200))
     _say(f"L7-retry: pytest rc={rc2}")
     if rc2 == 0:
+        t0 = time.monotonic()
+        live_failed2 = _live_card_still_failing_lower(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        _log_step(
+            steps, "L7b-retry", "orch", t0,
+            card_name=card_name, label=label, still_failing=live_failed2,
+        )
+        _say(f"L7b-retry: live-card classify still_failing={live_failed2}")
+        if live_failed2:
+            edits.revert(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.final_plan = revised
+            result.steps = steps
+            return result
         result.outcome = "applied-after-retry"
         result.final_plan = revised
         result.steps = steps

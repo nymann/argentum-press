@@ -1542,13 +1542,15 @@ _SUPERVISE_OUTCOMES: frozenset[str] = frozenset({
 })
 
 # Outcomes that the supervisor unsticks by simply re-executing the same
-# argv in a fresh interpreter — no Claude call. Cheap, bounded by the
-# same-fingerprint-twice + total-recovery budget. Use for failure modes
-# where the empirically-observed fix is "just try again" rather than
-# "fix some code".
-_SUPERVISE_RELAUNCH_ONLY: frozenset[str] = frozenset({
-    "abort_no_progress",
-})
+# argv in a fresh interpreter — no Claude call. Currently empty: we
+# briefly added abort_no_progress here on the theory that "restart and
+# it works" was a fluke worth automating, but the case it was meant to
+# help (Common Crook DiesExpression) turned out to be a genuine
+# structural issue — each relaunch produced the same bad commit. The
+# right fix lived in the lower playbook (the L7b live-classify gate)
+# and once that was in place, this relaunch path did more harm than
+# good. Kept as a hook for future "transient flake" cases.
+_SUPERVISE_RELAUNCH_ONLY: frozenset[str] = frozenset()
 
 # Playbook abort tags that warrant a repair pass. Most playbook aborts mean
 # the LLM emitted something the orchestrator/libcst rejected — exactly the

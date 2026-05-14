@@ -18,6 +18,7 @@ from argentum_press.fix_strategy import (
     FixOutcome,
     GapFixer,
     IterationContext,
+    LowerPlaybookFixer,
     ParseErrorPlaybookFixer,
 )
 
@@ -149,3 +150,66 @@ def test_parse_error_fixer_returns_applied_unchanged():
     assert fallback.calls == 0
     assert result.rc == 0
     assert result.outcome_tag == "pass"
+
+
+# ---------------------------------------------------------------------------
+# LowerPlaybookFixer
+# ---------------------------------------------------------------------------
+
+
+def test_lower_fixer_falls_back_on_classify_unchanged():
+    """L7b / L10b abort with `aborted-classify-unchanged` when pytest passed
+    but the live card still produces the same lower:<class> gap. The
+    fixer must delegate to its freeform fallback rather than bubbling
+    rc=2 (which would terminate the orchestrator loop on a card we
+    haven't actually tried freeform on)."""
+    def fake_run(**_kw):
+        return _FakePlaybookResult(outcome="aborted-classify-unchanged")
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = LowerPlaybookFixer(
+        run_lower=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="lower", label="argentum_press.parser.ast.expressions.DiesExpression")
+    result = fixer.fix(gap, _ctx())
+    assert fallback.calls == 1
+    assert result.rc == 0
+    assert result.outcome_tag == "pass"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["aborted-l3", "aborted-l6", "aborted-retry-pytest"],
+)
+def test_lower_fixer_bubbles_other_aborts(outcome: str):
+    """Non-classify aborts bubble through unchanged — the fallback should
+    NOT be consulted for those, to keep genuine LLM/edit/test failures
+    visible rather than papered over."""
+    def fake_run(**_kw):
+        return _FakePlaybookResult(outcome=outcome)
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = LowerPlaybookFixer(
+        run_lower=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="lower", label="some.Class")
+    result = fixer.fix(gap, _ctx())
+    assert fallback.calls == 0
+    assert result.rc != 0
+    assert result.outcome_tag == f"playbook_{outcome}"
+
+
+def test_lower_fixer_passes_through_non_lower_kind():
+    def fake_run(**_kw):
+        raise AssertionError("lower playbook must not be called for non-lower kinds")
+
+    fallback = _RecordingFallback(FixOutcome(rc=0, outcome_tag="pass"))
+    fixer = LowerPlaybookFixer(
+        run_lower=fake_run,
+        fallback=fallback,
+    )
+    gap = _FakeGap(kind="parse", label="parse-error:<EOF>@t")
+    fixer.fix(gap, _ctx())
+    assert fallback.calls == 1
