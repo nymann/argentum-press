@@ -1034,6 +1034,8 @@ class KotlinLowerer:
             # fields are Optional Statement, so emit a stub to move the gap
             # past UnlessStatement to whatever the body/condition surface next.
             return ["Effects.Unless()"]
+        if isinstance(stmt, ast.ManaRetentionStatement):
+            return 'Effects.ManaRetention()'
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
