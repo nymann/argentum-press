@@ -657,6 +657,10 @@ class KotlinLowerer:
         raise EmitterGap(ability)
 
     @ability.register
+    def _(self, ability: ast.MayhemAbility) -> str:
+        raise EmitterGap(ability)
+
+    @ability.register
     def _(self, ability: ast.WebSlingingAbility) -> str:
         return "keywords(Keyword.WEB_SLINGING)"
 
