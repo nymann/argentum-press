@@ -271,3 +271,11 @@ class DontStatement(Statement):
 
     subject: Expression | None = None
     statement: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RatherStatement(Statement):
+    """``<preferred> rather than <alternative>`` — express a preference of one statement over another."""
+
+    preferred: Statement | None = None
+    alternative: Statement | None = None
