@@ -627,3 +627,12 @@ class DiesExpression(EffectExpression):
 
     subject: Expression | None = None
     timing: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiscardExpression(EffectExpression):
+    """``<player>? discard(s) <subject> at random?`` — a player discards cards from hand."""
+
+    player: Expression | None = None
+    subject: Expression | None = None
+    at_random: bool = False
