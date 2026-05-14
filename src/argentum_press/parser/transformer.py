@@ -1,0 +1,1755 @@
+# pyright: basic
+"""Lower a Lark parse tree to argentum-press's frozen-dataclass AST.
+
+This is the bridge between :mod:`argentum_press.parser.grammar` (Reed's
+939-line Lark grammar, lifted verbatim) and :mod:`argentum_press.parser.ast`
+(the new flat dataclass surface that replaced Reed's ~250 ``Mg*`` IR
+classes). The grammar is enormous; we deliberately cover only the shapes
+exercised by the day-one BLB smoke. Anything we don't yet model surfaces
+as :class:`LoweringIncomplete` so the caller can grep the failure label.
+
+Strategy
+--------
+We subclass :class:`lark.Transformer`. Lark walks the tree bottom-up and
+calls a method named after each rule with the (already-transformed) list
+of children. This matches Reed's original ``MtgJsonTransformer`` and lets
+us write one focused method per rule without any explicit dispatch.
+
+Methods we don't define fall through to :meth:`Transformer.__default__`,
+which we override to raise :class:`LoweringIncomplete`. That keeps the
+contract honest: if a parsed shape reaches us we have either modelled it
+or surfaced a labelled error.
+
+Public API
+----------
+* :func:`transform` - lower a ``cardtext`` ``lark.Tree`` to a
+  :class:`~argentum_press.parser.ast.Card`.
+* :func:`parse` - the higher-level convenience: take a Scryfall dict or
+  raw oracle text, run the preprocessor, parse, and lower, returning a
+  :class:`ParseResult`.
+* :class:`ParseResult`, :class:`ParseError` - return shape for
+  :func:`parse`. Mirrors mtgcompiler's existing public shape so consumers
+  can switch backends with minimal churn.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any
+
+import lark
+from lark import Token, Transformer, Tree
+from lark.exceptions import LarkError, UnexpectedInput
+
+from argentum_press.parser.ast import (
+    AbsorbAbility,
+    AffinityAbility,
+    AfflictAbility,
+    AmplifyAbility,
+    AndExpression,
+    AndOrExpression,
+    AnnihilatorAbility,
+    AnyColorSpecifier,
+    AtStatement,
+    AuraSwapAbility,
+    AwakenAbility,
+    BandingAbility,
+    BestowAbility,
+    BloodthirstAbility,
+    BushidoAbility,
+    BuybackAbility,
+    Card,
+    CardDrawExpression,
+    ChampionAbility,
+    ChangeZoneExpression,
+    ChoiceExpression,
+    ColorExpression,
+    CompoundStatement,
+    CompoundTerminator,
+    CostSequenceExpression,
+    CrewAbility,
+    CumulativeUpkeepAbility,
+    CyclingAbility,
+    DamageType,
+    DamageTypeEnum,
+    DashAbility,
+    DashCostExpression,
+    DealsDamageExpression,
+    DealsDamageVariant,
+    DescriptionExpression,
+    DestroyExpression,
+    DevourAbility,
+    DredgeAbility,
+    EachExpression,
+    EchoAbility,
+    EmbalmAbility,
+    EmergeAbility,
+    EnchantAbility,
+    EntwineAbility,
+    EquipAbility,
+    EscalateAbility,
+    EternalizeAbility,
+    EvokeAbility,
+    ExileExpression,
+    Expression,
+    ExpressionStatement,
+    FabricateAbility,
+    FadingAbility,
+    FlashbackAbility,
+    FortifyAbility,
+    FrenzyAbility,
+    GenericDeclarationExpression,
+    GraftAbility,
+    HexproofAbility,
+    HiddenAgendaAbility,
+    IfStatement,
+    IndefiniteSingularExpression,
+    ItReference,
+    JumpStartAbility,
+    Keyword,
+    KeywordAbility,
+    KeywordAbilityListStatement,
+    KickerAbility,
+    LandwalkAbility,
+    LevelUpAbility,
+    MadnessAbility,
+    ManaExpression,
+    MayStatement,
+    MiracleAbility,
+    ModularAbility,
+    MorphAbility,
+    Name,
+    NameReference,
+    NamedExpression,
+    NinjutsuAbility,
+    NonExpression,
+    NumberTypeEnum,
+    NumberValue,
+    OfferingAbility,
+    OrExpression,
+    OutlastAbility,
+    OverloadAbility,
+    PartnerAbility,
+    PoisonousAbility,
+    ProtectionAbility,
+    ProwlAbility,
+    PTExpression,
+    RampageAbility,
+    RecoverAbility,
+    RegularAbility,
+    ReinforceAbility,
+    ReminderText,
+    RenownAbility,
+    ReplicateAbility,
+    ReturnExpression,
+    RevealExpression,
+    RippleAbility,
+    SacrificeExpression,
+    ScavengeAbility,
+    SearchLibraryExpression,
+    SelfReference,
+    ShuffleLibraryExpression,
+    SimpleKeywordAbility,
+    SoulshiftAbility,
+    SpliceAbility,
+    Statement,
+    StatementBlock,
+    SuspendAbility,
+    SurgeAbility,
+    SurveilAbility,
+    TapUntapExpression,
+    TargetExpression,
+    TextBox,
+    TransfigureAbility,
+    TransmuteAbility,
+    TributeAbility,
+    TriggeredAbility,
+    TypeExpression,
+    UncastExpression,
+    UnearthAbility,
+    UntilStatement,
+    VanishingAbility,
+    WardAbility,
+    WhenStatement,
+    WheneverStatement,
+    WithExpression,
+)
+
+
+# ---------------------------------------------------------------------------
+# Error types
+# ---------------------------------------------------------------------------
+
+
+class LoweringIncomplete(Exception):
+    """Raised when the transformer hits a grammar rule it doesn't model yet.
+
+    Message is a short, machine-grep-able label (e.g.
+    ``"unmodeled-rule:fightexpression"``) so it can flow straight into
+    :attr:`ParseError.message`.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ParseError:
+    """Surface-level failure record returned by :func:`parse`."""
+
+    kind: str  # "incomplete", "invalid", "ambiguous"
+    message: str
+    position: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ParseResult:
+    """Result of :func:`parse`: either an ``ast`` or an ``error``."""
+
+    ast: Card | None = None
+    error: ParseError | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.ast is not None
+
+
+# ---------------------------------------------------------------------------
+# Keyword rule-name -> Keyword enum
+# ---------------------------------------------------------------------------
+
+# The grammar emits a rule like ``kwflying`` for each marker keyword. For
+# Reed's parametric keywords (equip, ward, cycling, ...) we don't go through
+# this table - those have dedicated transformer methods that build the
+# specific dataclass.
+_SIMPLE_KEYWORD_BY_RULE: dict[str, Keyword] = {
+    "kwdeathtouch": Keyword.DEATHTOUCH,
+    "kwdefender": Keyword.DEFENDER,
+    "kwdoublestrike": Keyword.DOUBLE_STRIKE,
+    "kwfirststrike": Keyword.FIRST_STRIKE,
+    "kwflash": Keyword.FLASH,
+    "kwflying": Keyword.FLYING,
+    "kwhaste": Keyword.HASTE,
+    "kwindestructible": Keyword.INDESTRUCTIBLE,
+    "kwintimidate": Keyword.INTIMIDATE,
+    "kwlifelink": Keyword.LIFELINK,
+    "kwmenace": Keyword.MENACE,
+    "kwreach": Keyword.REACH,
+    "kwshroud": Keyword.SHROUD,
+    "kwtrample": Keyword.TRAMPLE,
+    "kwvigilance": Keyword.VIGILANCE,
+    "kwfear": Keyword.FEAR,
+    "kwshadow": Keyword.SHADOW,
+    "kwhorsemanship": Keyword.HORSEMANSHIP,
+    "kwprowess": Keyword.PROWESS,
+    "kwchangeling": Keyword.CHANGELING,
+    "kwphasing": Keyword.PHASING,
+    "kwconspire": Keyword.CONSPIRE,
+    "kwpersist": Keyword.PERSIST,
+    "kwwither": Keyword.WITHER,
+    "kwretrace": Keyword.RETRACE,
+    "kwexalted": Keyword.EXALTED,
+    "kwcascade": Keyword.CASCADE,
+    "kwrebound": Keyword.REBOUND,
+    "kwtotemarmor": Keyword.TOTEM_ARMOR,
+    "kwinfect": Keyword.INFECT,
+    "kwbattlecry": Keyword.BATTLE_CRY,
+    "kwlivingweapon": Keyword.LIVING_WEAPON,
+    "kwundying": Keyword.UNDYING,
+    "kwsoulbond": Keyword.SOULBOND,
+    "kwunleash": Keyword.UNLEASH,
+    "kwcipher": Keyword.CIPHER,
+    "kwevolve": Keyword.EVOLVE,
+    "kwextort": Keyword.EXTORT,
+    "kwfuse": Keyword.FUSE,
+    "kwdethrone": Keyword.DETHRONE,
+    "kwexploit": Keyword.EXPLOIT,
+    "kwdevoid": Keyword.DEVOID,
+    "kwingest": Keyword.INGEST,
+    "kwmyriad": Keyword.MYRIAD,
+    "kwskulk": Keyword.SKULK,
+    "kwmelee": Keyword.MELEE,
+    "kwimprovise": Keyword.IMPROVISE,
+    "kwaftermath": Keyword.AFTERMATH,
+    "kwascend": Keyword.ASCEND,
+    "kwassist": Keyword.ASSIST,
+    "kwmentor": Keyword.MENTOR,
+    "kwhideaway": Keyword.HIDEAWAY,
+    "kwepic": Keyword.EPIC,
+    "kwhaunt": Keyword.HAUNT,
+    "kwfrenzy": Keyword.FRENZY,
+    "kwauraswap": Keyword.AURA_SWAP,
+    "kwsplitsecond": Keyword.SPLIT_SECOND,
+    "kwgraft": Keyword.GRAFT,
+    "kwconvoke": Keyword.CONVOKE,
+    "kwstorm": Keyword.STORM,
+    "kwsunburst": Keyword.SUNBURST,
+    "kwdelve": Keyword.DELVE,
+    "kwgravestorm": Keyword.GRAVESTORM,
+    "kwprovoke": Keyword.PROVOKE,
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _flatten_keywordlist(items: list[Any]) -> list[Any]:
+    """``keywordsequence`` recurses left, so flatten its mixed children."""
+    out: list[Any] = []
+    for it in items:
+        if isinstance(it, list):
+            out.extend(_flatten_keywordlist(it))
+        else:
+            out.append(it)
+    return out
+
+
+def _strip_punct(s: str) -> str:
+    """Trim a trailing ``.`` that Lark sometimes preserves on the last token."""
+    return s.rstrip(".")
+
+
+# ---------------------------------------------------------------------------
+# Transformer
+# ---------------------------------------------------------------------------
+
+
+class CardTransformer(Transformer):
+    """Lark Transformer that emits argentum-press's dataclass AST.
+
+    A handful of rules below intentionally let unmodeled cases fall through
+    to :meth:`__default__`, which raises :class:`LoweringIncomplete`. That
+    keeps the per-rule methods readable: each one only handles the shape
+    we've actually seen.
+    """
+
+    # -- Top-level ----------------------------------------------------------
+
+    def cardtext(self, items):
+        # cardtext : remindertext? (ability NEWLINE*)*
+        lines: list[Any] = []
+        for it in items:
+            if isinstance(it, ReminderText):
+                # Reed attached a leading reminder text to nothing in
+                # particular; we drop it on day one.
+                continue
+            if isinstance(it, list):
+                lines.extend(it)
+            else:
+                lines.append(it)
+        return Card(text_box=TextBox(lines=tuple(lines)), abilities=tuple(lines))
+
+    def remindertext(self, items):
+        token = items[0]
+        return ReminderText(text=str(token))
+
+    # -- Abilities ----------------------------------------------------------
+
+    def ability(self, items):
+        # ability : abilityword? statementblock remindertext?  -> regularability
+        #         | keywordlist remindertext?
+        # The "regularability" arm is fired below; here we handle the
+        # keywordlist arm. It returns a *list* of abilities so cardtext
+        # can splice them in.
+        reminder: ReminderText | None = None
+        keyword_abilities: list[Any] = []
+        for it in items:
+            if isinstance(it, ReminderText):
+                reminder = it
+            elif isinstance(it, list):
+                keyword_abilities.extend(it)
+            elif isinstance(it, KeywordAbility):
+                keyword_abilities.append(it)
+            else:
+                # Shouldn't happen, but guard.
+                keyword_abilities.append(it)
+        if reminder is not None and keyword_abilities:
+            # Attach reminder to the final keyword (per Reed's convention).
+            last = keyword_abilities[-1]
+            keyword_abilities[-1] = _attach_reminder(last, reminder)
+        return keyword_abilities
+
+    def regularability(self, items):
+        # abilityword? statementblock remindertext?
+        ability_word = None
+        block: StatementBlock | None = None
+        reminder: ReminderText | None = None
+        for it in items:
+            if isinstance(it, StatementBlock):
+                block = it
+            elif isinstance(it, ReminderText):
+                reminder = it
+            else:
+                # ability word (rare in BLB) - we don't model it yet
+                pass
+        if block is None:
+            raise LoweringIncomplete("regularability-without-block")
+        # Promote conditional statements into TriggeredAbility surface.
+        triggered = _try_promote_triggered(block)
+        if triggered is not None:
+            outcome, condition_stmt = triggered
+            return TriggeredAbility(
+                condition=condition_stmt,
+                outcome=outcome,
+                ability_word=ability_word,
+                reminder_text=reminder,
+            )
+        return RegularAbility(block=block, ability_word=ability_word, reminder_text=reminder)
+
+    def abilityword(self, items):
+        # Carried through but ignored at the Card level for now.
+        raise LoweringIncomplete("unmodeled-rule:abilityword")
+
+    # -- Keyword list -------------------------------------------------------
+
+    def keywordlist(self, items):
+        return _flatten_keywordlist(items)
+
+    def keywordsequence(self, items):
+        return _flatten_keywordlist(items)
+
+    def keywordability(self, items):
+        return items[0]
+
+    # -- Simple-marker keywords --------------------------------------------
+    # All these collapse to SimpleKeywordAbility(keyword=<enum>).
+
+    def _simple_kw(self, rule_name: str):
+        kw = _SIMPLE_KEYWORD_BY_RULE.get(rule_name)
+        if kw is None:
+            raise LoweringIncomplete(f"unmapped-simple-kw:{rule_name}")
+        return SimpleKeywordAbility(keyword=kw)
+
+    def kwdeathtouch(self, items):
+        return self._simple_kw("kwdeathtouch")
+
+    def kwdefender(self, items):
+        return self._simple_kw("kwdefender")
+
+    def kwdoublestrike(self, items):
+        return self._simple_kw("kwdoublestrike")
+
+    def kwfirststrike(self, items):
+        return self._simple_kw("kwfirststrike")
+
+    def kwflash(self, items):
+        return self._simple_kw("kwflash")
+
+    def kwflying(self, items):
+        return self._simple_kw("kwflying")
+
+    def kwhaste(self, items):
+        return self._simple_kw("kwhaste")
+
+    def kwindestructible(self, items):
+        return self._simple_kw("kwindestructible")
+
+    def kwintimidate(self, items):
+        return self._simple_kw("kwintimidate")
+
+    def kwlifelink(self, items):
+        return self._simple_kw("kwlifelink")
+
+    def kwmenace(self, items):
+        return self._simple_kw("kwmenace")
+
+    def kwreach(self, items):
+        return self._simple_kw("kwreach")
+
+    def kwshroud(self, items):
+        return self._simple_kw("kwshroud")
+
+    def kwtrample(self, items):
+        return self._simple_kw("kwtrample")
+
+    def kwvigilance(self, items):
+        return self._simple_kw("kwvigilance")
+
+    def kwfear(self, items):
+        return self._simple_kw("kwfear")
+
+    def kwshadow(self, items):
+        return self._simple_kw("kwshadow")
+
+    def kwhorsemanship(self, items):
+        return self._simple_kw("kwhorsemanship")
+
+    def kwprowess(self, items):
+        return self._simple_kw("kwprowess")
+
+    def kwchangeling(self, items):
+        return self._simple_kw("kwchangeling")
+
+    def kwphasing(self, items):
+        return self._simple_kw("kwphasing")
+
+    def kwconspire(self, items):
+        return self._simple_kw("kwconspire")
+
+    def kwpersist(self, items):
+        return self._simple_kw("kwpersist")
+
+    def kwwither(self, items):
+        return self._simple_kw("kwwither")
+
+    def kwretrace(self, items):
+        return self._simple_kw("kwretrace")
+
+    def kwexalted(self, items):
+        return self._simple_kw("kwexalted")
+
+    def kwcascade(self, items):
+        return self._simple_kw("kwcascade")
+
+    def kwrebound(self, items):
+        return self._simple_kw("kwrebound")
+
+    def kwtotemarmor(self, items):
+        return self._simple_kw("kwtotemarmor")
+
+    def kwinfect(self, items):
+        return self._simple_kw("kwinfect")
+
+    def kwbattlecry(self, items):
+        return self._simple_kw("kwbattlecry")
+
+    def kwlivingweapon(self, items):
+        return self._simple_kw("kwlivingweapon")
+
+    def kwundying(self, items):
+        return self._simple_kw("kwundying")
+
+    def kwsoulbond(self, items):
+        return self._simple_kw("kwsoulbond")
+
+    def kwunleash(self, items):
+        return self._simple_kw("kwunleash")
+
+    def kwcipher(self, items):
+        return self._simple_kw("kwcipher")
+
+    def kwevolve(self, items):
+        return self._simple_kw("kwevolve")
+
+    def kwextort(self, items):
+        return self._simple_kw("kwextort")
+
+    def kwfuse(self, items):
+        return self._simple_kw("kwfuse")
+
+    def kwdethrone(self, items):
+        return self._simple_kw("kwdethrone")
+
+    def kwexploit(self, items):
+        return self._simple_kw("kwexploit")
+
+    def kwdevoid(self, items):
+        return self._simple_kw("kwdevoid")
+
+    def kwingest(self, items):
+        return self._simple_kw("kwingest")
+
+    def kwmyriad(self, items):
+        return self._simple_kw("kwmyriad")
+
+    def kwskulk(self, items):
+        return self._simple_kw("kwskulk")
+
+    def kwmelee(self, items):
+        return self._simple_kw("kwmelee")
+
+    def kwimprovise(self, items):
+        return self._simple_kw("kwimprovise")
+
+    def kwaftermath(self, items):
+        return self._simple_kw("kwaftermath")
+
+    def kwascend(self, items):
+        return self._simple_kw("kwascend")
+
+    def kwassist(self, items):
+        return self._simple_kw("kwassist")
+
+    def kwmentor(self, items):
+        return self._simple_kw("kwmentor")
+
+    def kwhideaway(self, items):
+        return self._simple_kw("kwhideaway")
+
+    def kwepic(self, items):
+        return self._simple_kw("kwepic")
+
+    def kwhaunt(self, items):
+        return self._simple_kw("kwhaunt")
+
+    def kwfrenzy(self, items):
+        return self._simple_kw("kwfrenzy")
+
+    def kwauraswap(self, items):
+        return self._simple_kw("kwauraswap")
+
+    def kwsplitsecond(self, items):
+        return self._simple_kw("kwsplitsecond")
+
+    def kwgraft(self, items):
+        return self._simple_kw("kwgraft")
+
+    def kwconvoke(self, items):
+        return self._simple_kw("kwconvoke")
+
+    def kwstorm(self, items):
+        return self._simple_kw("kwstorm")
+
+    def kwsunburst(self, items):
+        return self._simple_kw("kwsunburst")
+
+    def kwdelve(self, items):
+        return self._simple_kw("kwdelve")
+
+    def kwgravestorm(self, items):
+        return self._simple_kw("kwgravestorm")
+
+    def kwprovoke(self, items):
+        return self._simple_kw("kwprovoke")
+
+    # -- Parametric keywords -----------------------------------------------
+
+    def kwequip(self, items):
+        # "equip" cost | "equip" genericdescriptionexpression cost
+        if len(items) == 1:
+            return EquipAbility(cost=items[0])
+        return EquipAbility(quality=items[0], cost=items[1])
+
+    def kwenchant(self, items):
+        return EnchantAbility(descriptor=items[0])
+
+    def kwhexproof(self, items):
+        # "hexproof" | "hexproof" "from" genericdescriptionexpression
+        if not items:
+            # Plain hexproof - prefer the SimpleKeywordAbility shape.
+            return SimpleKeywordAbility(keyword=Keyword.HEXPROOF)
+        return HexproofAbility(quality=items[0])
+
+    def kwlandwalk(self, items):
+        return LandwalkAbility(landtype=items[0])
+
+    def kwprotection(self, items):
+        return ProtectionAbility(qualities=tuple(items))
+
+    def kwward(self, items):
+        return WardAbility(cost=items[0])
+
+    def kwbanding(self, items):
+        if not items:
+            return SimpleKeywordAbility(keyword=Keyword.BANDING)
+        return BandingAbility(quality=items[0])
+
+    def kwrampage(self, items):
+        return RampageAbility(caliber=items[0])
+
+    def kwcumulativeupkeep(self, items):
+        return CumulativeUpkeepAbility(cost=items[0])
+
+    def kwbuyback(self, items):
+        return BuybackAbility(cost=items[0])
+
+    def kwcycling(self, items):
+        # [typeexpression] "cycling" cost
+        if len(items) == 2:
+            return CyclingAbility(cycling_type=items[0], cost=items[1])
+        return CyclingAbility(cost=items[0])
+
+    def kwecho(self, items):
+        return EchoAbility(cost=items[0])
+
+    def kwfading(self, items):
+        return FadingAbility(caliber=items[0])
+
+    def kicker(self, items):
+        return KickerAbility(cost=items[0], is_multi=False)
+
+    def multikicker(self, items):
+        return KickerAbility(cost=items[0], is_multi=True)
+
+    def kwflashback(self, items):
+        return FlashbackAbility(cost=items[0])
+
+    def kwmadness(self, items):
+        return MadnessAbility(cost=items[0])
+
+    def kwmorph(self, items):
+        return MorphAbility(cost=items[0], is_mega=False)
+
+    def kwmegamorph(self, items):
+        return MorphAbility(cost=items[0], is_mega=True)
+
+    def kwamplify(self, items):
+        return AmplifyAbility(caliber=items[0])
+
+    def kwaffinity(self, items):
+        return AffinityAbility(descriptor=items[0])
+
+    def kwentwine(self, items):
+        return EntwineAbility(cost=items[0])
+
+    def kwmodular(self, items):
+        return ModularAbility(caliber=items[0])
+
+    def kwbushido(self, items):
+        return BushidoAbility(caliber=items[0])
+
+    def kwsoulshift(self, items):
+        return SoulshiftAbility(caliber=items[0])
+
+    def kwsplice(self, items):
+        return SpliceAbility(splice_type=items[0], cost=items[1])
+
+    def kwoffering(self, items):
+        return OfferingAbility(descriptor=items[0])
+
+    def kwninjutsu(self, items):
+        return NinjutsuAbility(cost=items[0])
+
+    def kwdredge(self, items):
+        return DredgeAbility(caliber=items[0])
+
+    def kwtransmute(self, items):
+        return TransmuteAbility(cost=items[0])
+
+    def kwbloodthirst(self, items):
+        return BloodthirstAbility(caliber=items[0])
+
+    def kwreplicate(self, items):
+        return ReplicateAbility(cost=items[0])
+
+    def kwrecover(self, items):
+        return RecoverAbility(cost=items[0])
+
+    def kwripple(self, items):
+        return RippleAbility(caliber=items[0])
+
+    def kwsuspend(self, items):
+        return SuspendAbility(caliber=items[0], cost=items[1])
+
+    def kwvanishing(self, items):
+        if not items:
+            return VanishingAbility()
+        return VanishingAbility(caliber=items[0])
+
+    def kwabsorb(self, items):
+        return AbsorbAbility(caliber=items[0])
+
+    def kwfortify(self, items):
+        return FortifyAbility(cost=items[0])
+
+    def kwpoisonous(self, items):
+        return PoisonousAbility(caliber=items[0])
+
+    def kwtransfigure(self, items):
+        return TransfigureAbility(cost=items[0])
+
+    def kwchampion(self, items):
+        return ChampionAbility(descriptor=items[0])
+
+    def kwevoke(self, items):
+        return EvokeAbility(cost=items[0])
+
+    def kwprowl(self, items):
+        return ProwlAbility(cost=items[0])
+
+    def kwreinforce(self, items):
+        # "reinforce" cost — Reed's grammar has no caliber here; the cost
+        # is the only operand we get. We synthesize a placeholder caliber
+        # rather than diverging from the dataclass; this is BLB-day-one.
+        return ReinforceAbility(caliber=NumberValue(value="x", ntype=NumberTypeEnum.CUSTOM), cost=items[0])
+
+    def kwdevour(self, items):
+        return DevourAbility(caliber=items[0])
+
+    def kwunearth(self, items):
+        return UnearthAbility(cost=items[0])
+
+    def kwannihilator(self, items):
+        return AnnihilatorAbility(caliber=items[0])
+
+    def kwlevelup(self, items):
+        return LevelUpAbility(cost=items[0])
+
+    def kwmiracle(self, items):
+        return MiracleAbility(cost=items[0])
+
+    def kwoverload(self, items):
+        return OverloadAbility(cost=items[0])
+
+    def kwscavenge(self, items):
+        return ScavengeAbility(cost=items[0])
+
+    def kwbestow(self, items):
+        return BestowAbility(cost=items[0])
+
+    def kwtribute(self, items):
+        return TributeAbility(caliber=items[0])
+
+    def kwhiddenagenda(self, items):
+        return HiddenAgendaAbility(is_double_agenda=False)
+
+    def kwdoubleagenda(self, items):
+        return HiddenAgendaAbility(is_double_agenda=True)
+
+    def kwoutlast(self, items):
+        return OutlastAbility(cost=items[0])
+
+    def kwdash(self, items):
+        return DashAbility(cost=items[0])
+
+    def kwrenown(self, items):
+        return RenownAbility(caliber=items[0])
+
+    def kwawaken(self, items):
+        return AwakenAbility(caliber=items[0], cost=items[1])
+
+    def kwsurge(self, items):
+        return SurgeAbility(cost=items[0])
+
+    def kwemerge(self, items):
+        return EmergeAbility(cost=items[0])
+
+    def kwescalate(self, items):
+        return EscalateAbility(cost=items[0])
+
+    def kwcrew(self, items):
+        return CrewAbility(caliber=items[0])
+
+    def kwfabricate(self, items):
+        return FabricateAbility(caliber=items[0])
+
+    def kwpartner(self, items):
+        if not items:
+            return SimpleKeywordAbility(keyword=Keyword.PARTNER)
+        # objectname token comes through as a Name-like.
+        name = items[0]
+        if isinstance(name, Name):
+            return PartnerAbility(partner_name=name)
+        return PartnerAbility(partner_name=Name(name=str(name)))
+
+    def kwembalm(self, items):
+        return EmbalmAbility(cost=items[0])
+
+    def kweternalize(self, items):
+        return EternalizeAbility(cost=items[0])
+
+    def kwafflict(self, items):
+        return AfflictAbility(caliber=items[0])
+
+    def kwsurveil(self, items):
+        return SurveilAbility(caliber=items[0])
+
+    def kwjumpstart(self, items):
+        return JumpStartAbility(cost=items[0])
+
+    # -- Cost ---------------------------------------------------------------
+
+    def cost(self, items):
+        return items[0]
+
+    def costsequence(self, items):
+        return CostSequenceExpression(arguments=tuple(items))
+
+    def dashcostexpression(self, items):
+        # DASH ( manasymbolexpression | effectexpression ) ("," effectexpression)*
+        # The DASH token is preserved in items[0]; we drop it.
+        ops = [it for it in items if not (isinstance(it, Token) and str(it) == "—")]
+        if len(ops) == 1:
+            return DashCostExpression(cost=ops[0])
+        return DashCostExpression(cost=CostSequenceExpression(arguments=tuple(ops)))
+
+    # -- Value expressions -------------------------------------------------
+
+    def valueexpression(self, items):
+        return items[0]
+
+    def valueterm(self, items):
+        return items[0]
+
+    def valuenumber(self, items):
+        token = items[0]
+        text = _strip_punct(str(token))
+        try:
+            return NumberValue(value=int(text), ntype=NumberTypeEnum.LITERAL)
+        except ValueError as e:
+            raise LoweringIncomplete(f"non-int-valuenumber:{token}") from e
+
+    def valuecardinal(self, items):
+        # "one"|"two"|... - keep as a string-tagged NumberValue.
+        word = str(items[0]) if items else ""
+        return NumberValue(value=word, ntype=NumberTypeEnum.CARDINAL)
+
+    def valueordinal(self, items):
+        word = str(items[0]) if items else ""
+        return NumberValue(value=word, ntype=NumberTypeEnum.ORDINAL)
+
+    def valuefrequency(self, items):
+        word = str(items[0]) if items else ""
+        return NumberValue(value=word, ntype=NumberTypeEnum.FREQUENCY)
+
+    def valuecustom(self, items):
+        # "x" or "*" - empty items because the grammar matches a literal.
+        # The actual character is recoverable from the parse tree only if
+        # we look at the parent context. For BLB the only valuecustom we
+        # care about is X (Mind Spring).
+        return NumberValue(value="x", ntype=NumberTypeEnum.CUSTOM)
+
+    # -- ptchange ----------------------------------------------------------
+
+    def ptchangeexpression(self, items):
+        # (PLUS|MINUS) valueterm "/" (PLUS|MINUS) valueterm
+        # Children come through as four items: sign, value, sign, value.
+        signs: list[str] = []
+        values: list[NumberValue] = []
+        for it in items:
+            if isinstance(it, Token):
+                signs.append(str(it))
+            elif isinstance(it, NumberValue):
+                values.append(it)
+        if len(signs) != 2 or len(values) != 2:
+            raise LoweringIncomplete(
+                f"ptchange-unexpected-shape:signs={signs},values={len(values)}"
+            )
+        power = _signed_number(signs[0], values[0])
+        toughness = _signed_number(signs[1], values[1])
+        return PTExpression(power=power, toughness=toughness)
+
+    def ptexpression(self, items):
+        return PTExpression(power=items[0], toughness=items[1])
+
+    # -- Declarations / references -----------------------------------------
+
+    def declarationorreference(self, items):
+        return items[0]
+
+    def genericdeclarationexpression(self, items):
+        return items[0]
+
+    def genericdescriptionexpression(self, items):
+        return items[0]
+
+    def objectdeclaration(self, items):
+        # declarationdecorator* objectdefinition
+        modifiers = [it for it in items[:-1] if it is not None]
+        defn = items[-1]
+        if not modifiers:
+            return defn
+        return GenericDeclarationExpression(definition=_wrap_modifiers(defn, modifiers))
+
+    def objectdefinition(self, items):
+        return items[0]
+
+    def objectdescriptionexpression(self, items):
+        # objectpreterm+ objectpostterm*
+        return DescriptionExpression(descriptors=tuple(items))
+
+    def objectpreterm(self, items):
+        return items[0]
+
+    def objectpostterm(self, items):
+        return items[0]
+
+    def playerdeclaration(self, items):
+        modifiers = [it for it in items[:-1] if it is not None]
+        defn = items[-1]
+        if not modifiers:
+            return defn
+        return GenericDeclarationExpression(definition=_wrap_modifiers(defn, modifiers))
+
+    def playerdefinition(self, items):
+        return items[0]
+
+    def playerdescriptionexpression(self, items):
+        return DescriptionExpression(descriptors=tuple(items))
+
+    def playerdescriptionterm(self, items):
+        return items[0]
+
+    def playerterm(self, items):
+        # Reed had PlayerTerm dataclass; we return a NumberValue-like token
+        # as the simplest carrier. Today we just pass through the token
+        # value as a NameReference so downstream code can read text.
+        token = items[0]
+        return NameReference(antecedent=Name(name=str(token)))
+
+    def playerdeclref(self, items):
+        return items[0]
+
+    def playerreference(self, items):
+        # referencedecorator+ playerdefinition - we just attach the
+        # decorators by wrapping in DescriptionExpression.
+        return DescriptionExpression(descriptors=tuple(items))
+
+    def objectdeclref(self, items):
+        return items[0]
+
+    def objectreference(self, items):
+        return DescriptionExpression(descriptors=tuple(items))
+
+    # -- Decorators --------------------------------------------------------
+
+    def declarationdecorator(self, items):
+        return items[0]
+
+    def referencedecorator(self, items):
+        return items[0]
+
+    def targetdecorator(self, items):
+        # "target" or "<value> target"
+        if not items:
+            return TargetExpression(operand=None, is_any=False)
+        return TargetExpression(operand=items[0], is_any=False)
+
+    def eachdecorator(self, items):
+        return EachExpression(operand=None) if not items else EachExpression(operand=items[0])
+
+    def alldecorator(self, items):
+        return None  # passthrough; objectdeclaration absorbs.
+
+    def otherdecorator(self, items):
+        return None
+
+    def indefinitearticledecorator(self, items):
+        return None
+
+    def definitearticledecorator(self, items):
+        return None
+
+    def anydecorator(self, items):
+        return None
+
+    def samedecorator(self, items):
+        return None
+
+    def thatreference(self, items):
+        return None
+
+    def thisreference(self, items):
+        return None
+
+    def possessivereference(self, items):
+        return None
+
+    # -- Reference terms ---------------------------------------------------
+
+    def reference(self, items):
+        return items[0]
+
+    def neutralreference(self, items):
+        return ItReference()
+
+    def selfreference(self, items):
+        return SelfReference()
+
+    def namereference(self, items):
+        return NameReference(antecedent=None)
+
+    def anytargetexpression(self, items):
+        return TargetExpression(operand=None, is_any=True)
+
+    # -- Types -------------------------------------------------------------
+
+    def typeexpression(self, items):
+        return TypeExpression(types=tuple(items), comma_delimited=False)
+
+    def ortypeexpression(self, items):
+        return TypeExpression(types=tuple(items), comma_delimited=True)
+
+    def typeterm(self, items):
+        # Pass the raw token through; downstream code reads its value.
+        token = items[0]
+        return Name(name=str(token)) if isinstance(token, Token) else token
+
+    def nontypeterm(self, items):
+        return NonExpression(operand=items[0])
+
+    # -- Modifiers / qualifiers -------------------------------------------
+
+    def modifier(self, items):
+        # We don't model the full modifier taxonomy yet - pass through as
+        # an opaque Name so DescriptionExpression can carry the surface text.
+        token = items[0]
+        return Name(name=str(token))
+
+    def qualifier(self, items):
+        token = items[0]
+        return Name(name=str(token))
+
+    def characteristicexpression(self, items):
+        return items[0]
+
+    def colorexpression(self, items):
+        return items[0]
+
+    def colorterm(self, items):
+        return ColorExpression(value=Name(name=str(items[0])))
+
+    def colorsingleexpr(self, items):
+        return ColorExpression(value=items[0])
+
+    # -- Withexpression / namedexpression ---------------------------------
+
+    def withexpression(self, items):
+        return WithExpression(operand=items[0]) if items else WithExpression(operand=Name(name=""))
+
+    def withoutexpression(self, items):
+        # No dedicated WithoutExpression - reuse WithExpression w/ a marker.
+        # Day-one stand-in.
+        return WithExpression(operand=items[0]) if items else WithExpression(operand=Name(name=""))
+
+    def namedexpression(self, items):
+        return NamedExpression(operand=items[0])
+
+    def objectname(self, items):
+        return Name(name=str(items[0]))
+
+    def OBJECTNAME(self, token):
+        return Name(name=str(token))
+
+    # -- Statements --------------------------------------------------------
+
+    def statementblock(self, items):
+        return StatementBlock(statements=tuple(items))
+
+    def statement(self, items):
+        return items[0]
+
+    def expressionstatement(self, items):
+        # (effectexpression | beexpression | valueexpression) timeexpression?
+        return ExpressionStatement(root=items[0])
+
+    def maystatement(self, items):
+        # playerdeclref? ("may" | "may" "have") statement
+        if len(items) == 2:
+            return MayStatement(player=items[0], statement=items[1])
+        # Implied "you"
+        return MayStatement(
+            player=NameReference(antecedent=Name(name="you")),
+            statement=items[0],
+        )
+
+    def thenstatement(self, items):
+        return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
+
+    # -- Compound statements ----------------------------------------------
+
+    def compoundthenstatement(self, items):
+        return CompoundStatement(statements=tuple(items), terminator=CompoundTerminator.THEN)
+
+    def compoundandstatement(self, items):
+        return CompoundStatement(statements=tuple(items), terminator=CompoundTerminator.AND)
+
+    def compoundorstatement(self, items):
+        return CompoundStatement(statements=tuple(items), terminator=CompoundTerminator.AND)
+
+    def compounduntilstatement(self, items):
+        # The grammar shape is:
+        #   statement ("," statement)* untilstatement
+        # The untilstatement is the *inverted* arm (untiltimestatementinv).
+        # We flatten into a CompoundStatement so the surface is preserved.
+        if len(items) == 2 and isinstance(items[1], UntilStatement):
+            # The until-statement already wraps the verb-phrase + duration;
+            # graft the subject onto the until's consequence.
+            subject_stmt = items[0]
+            until = items[1]
+            return UntilStatement(
+                conditional=until.conditional,
+                consequence=_compound_pair(subject_stmt, until.consequence),
+                inverted=until.inverted,
+            )
+        return CompoundStatement(statements=tuple(items), terminator=CompoundTerminator.AND)
+
+    # -- Conditional statements -------------------------------------------
+
+    def conditionalstatement(self, items):
+        return items[0]
+
+    def ifstatement(self, items):
+        # "if" statement "," statement
+        return IfStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def ifstatementinv(self, items):
+        # statement "only"? "if" statement
+        return IfStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def whenstatement(self, items):
+        return WhenStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def whenstatementinv(self, items):
+        return WhenStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def wheneverstatement(self, items):
+        # "whenever" statement timeexpression? "," statement
+        if len(items) == 3:
+            conditional, _time, consequence = items
+        else:
+            conditional, consequence = items
+        return WheneverStatement(conditional=conditional, consequence=consequence, inverted=False)
+
+    def wheneverstatementinv(self, items):
+        if len(items) == 3:
+            consequence, conditional, _time = items
+        else:
+            consequence, conditional = items
+        return WheneverStatement(conditional=conditional, consequence=consequence, inverted=True)
+
+    def atstatement(self, items):
+        return AtStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def atstatementinv(self, items):
+        return AtStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def untiltimestatement(self, items):
+        # "until" timeexpression "," statement
+        return UntilStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def untiltimestatementinv(self, items):
+        # statement "until" timeexpression
+        # In the compounduntilstatement context, the inverted arm gets the
+        # verb-phrase as items[0] and the timeexpression as items[1].
+        return UntilStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def untileffecthappensstatement(self, items):
+        return UntilStatement(
+            conditional=items[0],
+            consequence=ExpressionStatement(root=Name(name="")),
+            inverted=False,
+        )
+
+    # -- Time expressions --------------------------------------------------
+
+    def timeexpression(self, items):
+        # We don't model time fully; carry surface text as a Name so any
+        # later stage can see what we saw.
+        if len(items) == 1:
+            return items[0]
+        return DescriptionExpression(descriptors=tuple(items))
+
+    def timeterm(self, items):
+        # Pass through tokens / decorators wrapped in a Name.
+        if len(items) == 1 and isinstance(items[0], Token):
+            return Name(name=str(items[0]))
+        return DescriptionExpression(descriptors=tuple(items))
+
+    def timeendmodifier(self, items):
+        return Name(name="end of")
+
+    def timebeginmodifier(self, items):
+        return Name(name="beginning of")
+
+    def timemodifier(self, items):
+        return items[0]
+
+    def nexttimemodifier(self, items):
+        return Name(name="next")
+
+    def additionaltimemodifier(self, items):
+        return Name(name="additional")
+
+    def extratimemodifier(self, items):
+        return Name(name="extra")
+
+    def startendspecifier(self, items):
+        return items[0]
+
+    # -- Zones -------------------------------------------------------------
+
+    def zonedeclarationexpression(self, items):
+        return items[-1]
+
+    def zone(self, items):
+        # ZONE token -> Name carrying the surface form.
+        return Name(name=str(items[0]))
+
+    def locationexpression(self, items):
+        # Pass the zone through.
+        return items[-1]
+
+    # -- Effect dispatch ---------------------------------------------------
+
+    def effectexpression(self, items):
+        return items[0]
+
+    def keywordactionexpression(self, items):
+        return items[0]
+
+    def basickeywordaction(self, items):
+        return items[0]
+
+    def specialkeywordaction(self, items):
+        return items[0]
+
+    # -- Specific effects --------------------------------------------------
+
+    def dealsdamageexpression(self, items):
+        # declarationorreference? "deals" valueexpression? DAMAGETYPE
+        #   ("to" declarationorreference)? (quantityrulemodification)*
+        # Children we care about: origin (declref), amount (value), DAMAGETYPE
+        # (a Token), subject (declref). Quantity rule modifiers are dropped.
+        origin: Expression | None = None
+        amount: Expression | None = None
+        damage_type = DamageType(value=DamageTypeEnum.REGULAR)
+        subject: Expression | None = None
+        seen_dmg = False
+        for it in items:
+            if isinstance(it, Token):
+                ttype = getattr(it, "type", "")
+                if ttype == "DAMAGETYPE":
+                    damage_type = DamageType(value=_damage_type_for(str(it)))
+                    seen_dmg = True
+                # Other tokens (quantity modifier words) we ignore.
+                continue
+            if isinstance(it, NumberValue):
+                amount = it
+                continue
+            # Declaration / reference
+            if not seen_dmg and origin is None:
+                origin = it
+            elif seen_dmg and subject is None:
+                subject = it
+            else:
+                # Spare declaration: stash on amount or skip.
+                if amount is None:
+                    amount = it
+        if origin is None:
+            # The implied-antecedent variant ("4 damage to any target")
+            # has no origin token.
+            origin = NameReference(antecedent=None)
+        return DealsDamageExpression(
+            origin=origin,
+            damage_type=damage_type,
+            damage_amount=amount,
+            subject=subject,
+            variant=DealsDamageVariant.A,
+        )
+
+    def destroyexpression(self, items):
+        return DestroyExpression(subject=items[0])
+
+    def sacrificeexpression(self, items):
+        # playerdeclref? "sacrifice" declarationorreference
+        if len(items) == 2:
+            return SacrificeExpression(subject=items[1], controller=items[0])
+        return SacrificeExpression(subject=items[0])
+
+    def exileexpression(self, items):
+        return ExileExpression(subject=items[0])
+
+    def returnexpression(self, items):
+        # playerdeclref? "return"["s"] declarationorreference atrandomexpression?
+        # ("from" zonedeclarationexpression)? "to" zonedeclarationexpression
+        # genericdeclarationexpression? zoneplacementmodifier?
+        # We grab subject, optional origin, and destination using Name markers.
+        nonnull = [it for it in items if it is not None]
+        if len(nonnull) < 2:
+            raise LoweringIncomplete("return-too-few-children")
+        return ReturnExpression(subject=nonnull[0], destination=nonnull[-1])
+
+    def revealexpression(self, items):
+        return RevealExpression()
+
+    def uncastexpression(self, items):
+        return UncastExpression(subject=items[0])
+
+    def drawexpression(self, items):
+        # playerdeclref? ("draw"["s"]|"drew") cardexpression
+        # Reed's transformer attached the player to the surface; we don't
+        # currently carry a player field on CardDrawExpression, so drop it.
+        card_expr = items[-1]
+        quantity = _quantity_from_cardexpression(card_expr)
+        return CardDrawExpression(quantity=quantity)
+
+    def cardexpression(self, items):
+        # Carries through raw - drawexpression extracts the quantity.
+        return items
+
+    def attacksexpression(self, items):
+        # "attacks" — we return a minimal Name marker. Triggered-ability
+        # promotion in regularability looks for this shape.
+        return Name(name="attacks")
+
+    def attackedexpression(self, items):
+        return Name(name="attacked")
+
+    def blocksexpression(self, items):
+        return Name(name="blocks")
+
+    def blockedexpression(self, items):
+        return Name(name="blocked")
+
+    def enterzoneexpression(self, items):
+        subject = items[0]
+        zone = items[1] if len(items) > 1 else Name(name="the battlefield")
+        return ChangeZoneExpression(subject=subject, zone=zone, entering=True)
+
+    def leavezoneexpression(self, items):
+        subject = items[0]
+        zone = items[1] if len(items) > 1 else Name(name="the battlefield")
+        return ChangeZoneExpression(subject=subject, zone=zone, entering=False)
+
+    def tapexpression(self, items):
+        subject = items[0] if items else Name(name="")
+        return TapUntapExpression(subject=subject, tap=True, untap=False)
+
+    def untapexpression(self, items):
+        subject = items[0] if items else Name(name="")
+        return TapUntapExpression(subject=subject, tap=False, untap=True)
+
+    def getsptexpression(self, items):
+        # declarationorreference? "gets" ptchangeexpression
+        # The first item is the subject; the second is the PT change.
+        # We expose this as an ExpressionStatement carrying a synthetic
+        # DescriptionExpression so the BLB stat-mod path round-trips.
+        subject = items[0] if len(items) > 1 else None
+        pt = items[-1]
+        descriptors: list[Expression] = []
+        if subject is not None:
+            descriptors.append(subject)
+        descriptors.append(pt)
+        return DescriptionExpression(descriptors=tuple(descriptors))
+
+    def searchexpression(self, items):
+        # playerdeclref? ("search"["es"] | "searched") zonedeclarationexpression?
+        # "for" declarationorreference
+        owner = items[0] if len(items) >= 2 else NameReference(antecedent=Name(name="you"))
+        subject = items[-1]
+        return SearchLibraryExpression(owner=owner, subject=subject)
+
+    def shuffleexpression(self, items):
+        owner = items[0] if items else NameReference(antecedent=Name(name="you"))
+        return ShuffleLibraryExpression(owner=owner)
+
+    def targetsexpression(self, items):
+        # objectdeclref? "target"["s"] declarationorreference
+        # Used as a subject in compounduntilstatement bodies. We return
+        # the operand wrapped in TargetExpression so the surface text
+        # matches "target creature".
+        if not items:
+            return TargetExpression(operand=None, is_any=False)
+        return TargetExpression(operand=items[-1], is_any=False)
+
+    # -- Mana --------------------------------------------------------------
+
+    def manasymbolexpression(self, items):
+        return ManaExpression(symbols=tuple(items))
+
+    def manasymbol(self, items):
+        return items[0]
+
+    def manamarkerseq(self, items):
+        return items[0]
+
+    def regularmanasymbol(self, items):
+        return Name(name=str(items[0]))
+
+    def genericmanasymbol(self, items):
+        return Name(name=str(items[0]))
+
+    def whitemarker(self, items):
+        return Name(name="W")
+
+    def bluemarker(self, items):
+        return Name(name="U")
+
+    def blackmarker(self, items):
+        return Name(name="B")
+
+    def redmarker(self, items):
+        return Name(name="R")
+
+    def greenmarker(self, items):
+        return Name(name="G")
+
+    def xmarker(self, items):
+        return Name(name="X")
+
+    def xmanasymbol(self, items):
+        return items[0]
+
+    def colorlessmarker(self, items):
+        return Name(name="C")
+
+    def colorlessmanasymbol(self, items):
+        return items[0]
+
+    def snowmarker(self, items):
+        return Name(name="S")
+
+    def snowmanasymbol(self, items):
+        return items[0]
+
+    def phyrexianmarker(self, items):
+        return Name(name="P")
+
+    def phyrexianmanasymbol(self, items):
+        return Name(name=f"{items[0].name}/P")
+
+    def hybridmanasymbol(self, items):
+        return Name(name=f"{items[0].name}/{items[1].name}")
+
+    def alternate2manasymbol(self, items):
+        return Name(name=f"2/{items[0].name}")
+
+    def halfmarker(self, items):
+        return Name(name="H")
+
+    def halfmanasymbol(self, items):
+        return Name(name=f"H{items[1].name}")
+
+    # -- Tap/untap symbol --------------------------------------------------
+
+    def tapuntapsymbol(self, items):
+        token = items[0]
+        return Name(name=str(token))
+
+    # -- Catch-all ---------------------------------------------------------
+
+    def __default__(self, data, children, meta):
+        """Any unmodeled rule raises a labelled :class:`LoweringIncomplete`.
+
+        ``data`` is the rule name. ``children`` is the list of already-
+        transformed children. Surfacing the rule name preserves the
+        "tell me exactly which shape is missing" property we want for the
+        BLB-day-one corpus.
+        """
+        # Skip a few rules that are pure pass-throughs and benign to surface.
+        raise LoweringIncomplete(f"unmodeled-rule:{data}")
+
+
+# ---------------------------------------------------------------------------
+# Helpers operating on the produced AST
+# ---------------------------------------------------------------------------
+
+
+def _signed_number(sign: str, value: NumberValue) -> NumberValue:
+    """Apply a +/- sign to a NumberValue. Surface text is preserved."""
+    if sign == "+":
+        return value
+    if sign == "-" and isinstance(value.value, int):
+        return NumberValue(value=-value.value, ntype=value.ntype)
+    return value
+
+
+def _damage_type_for(text: str) -> DamageTypeEnum:
+    t = text.lower()
+    if "combat" in t and "noncombat" not in t:
+        return DamageTypeEnum.COMBAT
+    if "noncombat" in t:
+        return DamageTypeEnum.NONCOMBAT
+    return DamageTypeEnum.REGULAR
+
+
+def _quantity_from_cardexpression(card_expr: Any) -> Expression:
+    """Pull the quantity (NumberValue) out of a raw cardexpression child list.
+
+    Reed's cardexpression rule is ``!cardexpression``-bang, so children are
+    raw tokens/trees. We look for the first NumberValue or, failing that,
+    treat an ``"a"`` token as a singular indefinite.
+    """
+    if not isinstance(card_expr, list):
+        return NumberValue(value=1, ntype=NumberTypeEnum.LITERAL)
+    for it in card_expr:
+        if isinstance(it, NumberValue):
+            return it
+        if isinstance(it, Token) and str(it).lower() == "a":
+            return NumberValue(value=1, ntype=NumberTypeEnum.LITERAL)
+    return NumberValue(value=1, ntype=NumberTypeEnum.LITERAL)
+
+
+def _wrap_modifiers(defn: Expression, modifiers: list[Expression]) -> Expression:
+    """Apply modifier wrappers (target, each, etc.) to a definition.
+
+    We compose right-to-left so the outermost modifier in source order is
+    the outermost wrapper.
+    """
+    out: Expression = defn
+    for mod in reversed(modifiers):
+        if isinstance(mod, TargetExpression):
+            out = TargetExpression(operand=out, is_any=mod.is_any)
+        elif isinstance(mod, EachExpression):
+            out = EachExpression(operand=out)
+        elif isinstance(mod, IndefiniteSingularExpression):
+            out = IndefiniteSingularExpression(operand=out)
+        # Other markers (indefinite article, definite article, etc.) are
+        # surface-only and dropped on day one.
+    return out
+
+
+def _attach_reminder(ability: KeywordAbility, reminder: ReminderText) -> KeywordAbility:
+    """Return a copy of ``ability`` with ``reminder_text`` set.
+
+    Frozen dataclasses use ``dataclasses.replace`` semantics; we do that
+    manually since some classes share the field but not the type.
+    """
+    try:
+        from dataclasses import replace as _replace
+
+        return _replace(ability, reminder_text=reminder)
+    except (TypeError, ValueError):
+        return ability
+
+
+def _try_promote_triggered(
+    block: StatementBlock,
+) -> tuple[Statement, Statement] | None:
+    """If ``block`` is a single conditional, surface it as a TriggeredAbility.
+
+    Returns ``(outcome, condition)`` if promotion applies, else ``None``.
+    The caller assembles the actual :class:`TriggeredAbility`.
+    """
+    if len(block.statements) != 1:
+        return None
+    stmt = block.statements[0]
+    if isinstance(stmt, (WhenStatement, WheneverStatement, AtStatement)):
+        # Surface the condition as the trigger and the consequence as the body.
+        # Returning (outcome, condition) per the dataclass field order.
+        cond = stmt.conditional if isinstance(stmt.conditional, Statement) else _wrap_as_statement(stmt.conditional)
+        return stmt.consequence, cond
+    return None
+
+
+def _wrap_as_statement(expr: Any) -> Statement:
+    if isinstance(expr, Statement):
+        return expr
+    if isinstance(expr, Expression):
+        return ExpressionStatement(root=expr)
+    return ExpressionStatement(root=Name(name=str(expr)))
+
+
+def _compound_pair(a: Statement, b: Statement) -> Statement:
+    """Compose two statements with the AND terminator."""
+    return CompoundStatement(statements=(a, b), terminator=CompoundTerminator.AND)
+
+
+# ---------------------------------------------------------------------------
+# Public entry points
+# ---------------------------------------------------------------------------
+
+
+_CONTRACTION_REPLACEMENTS = (
+    ("his or her", "their"),
+    ("it's", "it is"),
+    ("you're", "you are"),
+    ("they're", "they are"),
+    ("you've", "you have"),
+    ("isn't", "is not"),
+    ("aren't", "are not"),
+    ("don't", "do not"),
+    ("doesn't", "does not"),
+    ("can't", "can not"),
+    ("that's", "that is"),
+    ("each get", "get"),
+    ("each gain", "gain"),
+    ("each lose", "lose"),
+    ("each draw", "draw"),
+    ("each discard", "discard"),
+    ("each sacrifice", "sacrifice"),
+)
+
+
+def _preprocess(text: str, name: str | None) -> str:
+    """Reed's prelex step, inlined here so we own the order of operations.
+
+    The shipping :class:`~argentum_press.parser.grammar.preprocessor.MtgJsonPreprocessor`
+    has a parameter-order bug (``prelex(self, inputobj, flags, name)``)
+    that we don't want to fix in this PR. Rewriting the substitution
+    inline is cheap and lets us own the contract.
+    """
+    if name:
+        if "," in name:
+            head = name.split(",", 1)[0]
+            text = _ci_replace(text, name, "~f")
+            text = _ci_replace(text, head, "~")
+        else:
+            text = _ci_replace(text, name, "~")
+    for old, new in _CONTRACTION_REPLACEMENTS:
+        text = _ci_replace(text, old, new)
+    # Quoted-period sentinel: ".\"" -> ".\"."
+    text = text.replace('."', '."."')
+    return text
+
+
+def _ci_replace(text: str, old: str, new: str) -> str:
+    if not old:
+        return text
+    return re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
+
+
+# Lazily cached parser so we don't recompile the 939-line grammar per call.
+_PARSER: lark.Lark | None = None
+
+
+def _get_parser() -> lark.Lark:
+    global _PARSER
+    if _PARSER is None:
+        # Local import to avoid a hard module-load cost on bare AST users.
+        from argentum_press.parser.grammar.compiler import MtgJsonCompiler
+
+        _PARSER = MtgJsonCompiler().getParser()
+    return _PARSER
+
+
+def transform(tree: Tree) -> Card:
+    """Lower a parsed Lark ``cardtext`` tree to a :class:`Card`.
+
+    Raises :class:`LoweringIncomplete` if any unmodeled shape is hit.
+    """
+    if tree is None:
+        return Card(text_box=TextBox(lines=()), abilities=())
+    result = CardTransformer().transform(tree)
+    if not isinstance(result, Card):
+        # Defensive: the cardtext method always returns Card, but if Lark
+        # returns the inner ability list directly (e.g. start-rule oddity)
+        # we coerce it.
+        if isinstance(result, list):
+            return Card(text_box=TextBox(lines=tuple(result)), abilities=tuple(result))
+        raise LoweringIncomplete(f"unexpected-root-result:{type(result).__name__}")
+    return result
+
+
+def parse(card: dict | str, *, name: str | None = None) -> ParseResult:
+    """Full pipeline: Scryfall dict or raw oracle text -> :class:`ParseResult`.
+
+    ``card`` may be:
+      * A string of oracle text (the card's name should be passed via
+        ``name=`` so ``~`` substitution works).
+      * A Scryfall-shaped dict carrying ``name`` and ``oracle_text``.
+    """
+    if isinstance(card, dict):
+        text = card.get("oracle_text", "") or ""
+        card_name = card.get("name") if name is None else name
+    else:
+        text = card
+        card_name = name
+
+    if not text.strip():
+        return ParseResult(ast=Card())
+
+    preprocessed = _preprocess(text, card_name)
+    parser = _get_parser()
+    try:
+        tree = parser.parse(preprocessed)
+    except UnexpectedInput as e:
+        return ParseResult(error=ParseError(kind="incomplete", message=f"parse-error:{e!s}".splitlines()[0]))
+    except LarkError as e:
+        return ParseResult(error=ParseError(kind="invalid", message=f"lark-error:{e!s}".splitlines()[0]))
+
+    try:
+        ast = transform(tree)
+    except LoweringIncomplete as e:
+        return ParseResult(error=ParseError(kind="incomplete", message=str(e)))
+    return ParseResult(ast=ast)
+
+
+__all__ = [
+    "CardTransformer",
+    "LoweringIncomplete",
+    "ParseError",
+    "ParseResult",
+    "parse",
+    "transform",
+]

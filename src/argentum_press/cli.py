@@ -20,9 +20,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import _ast
 from .catalog import ScryfallCatalog
 from .lowerer import KotlinLowerer
+from .parser import ParseResult
 from .pipeline import AddSetPipeline, FilesystemWriter, Parser, PipelineReport
 from .reporter import ConsoleReporter
 from .verify import CompileVerifier
@@ -122,20 +122,17 @@ def _run_add_set(args: argparse.Namespace) -> int:
 
 
 def _resolve_parser() -> Parser | None:
-    """Look for an installed mtgcompiler that exposes the parse() contract."""
-    try:
-        import mtgcompiler  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    parse = getattr(mtgcompiler, "parse", None)
-    if parse is None:
-        return None
+    """Return the builtin argentum_press.parser as the serial-path parser.
 
-    class _MtgCompilerParser:
-        def parse(self, card: dict[str, Any]) -> _ast.ParseResult:
-            return parse(card)  # type: ignore[no-any-return]
+    The Parser protocol is satisfied by a thin object delegating to
+    argentum_press.parser.parse — same shape the worker subprocess uses."""
+    from argentum_press import parser as _parser
 
-    return _MtgCompilerParser()
+    class _BuiltinParser:
+        def parse(self, card: dict[str, Any]) -> ParseResult:
+            return _parser.parse(card)
+
+    return _BuiltinParser()
 
 
 def _print_final_summary(report: PipelineReport) -> None:
@@ -147,6 +144,9 @@ def _print_final_summary(report: PipelineReport) -> None:
     print(f"  deferred (parse):      {len(report.deferred_parse):>4}")
     print(f"  bucket 2 (needs ext.): {len(report.bucket_2):>4}")
     print(f"  bucket 1 emitted:      {len(report.emitted):>4}")
+    basics = report.emitted_basic_lands
+    if basics is not None:
+        print(f"  basic-land printings:  {basics.count:>4}  -> {basics.path}")
 
     if report.bucket_2:
         print("\n  Bucket-2 ranked by missing argentum primitive:")

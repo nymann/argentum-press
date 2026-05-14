@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import _ast, existing
+from . import existing
 from .catalog import CacheState
 from .classify import Bucket1, Bucket2, classify
 from .lowerer import KotlinLowerer
@@ -33,9 +33,11 @@ from .outcome import (
     DeferredEmitterGap,
     DeferredParseFailed,
     Emitted,
+    EmittedBasicLands,
 )
+from .parser import ParseError, ParseResult
 from .reporter import NullReporter, Reporter
-from .template import pascal_case, render
+from .template import is_basic_land, pascal_case, render, render_basic_lands
 from .verify import CompileFail, CompileOk, CompileResult
 
 # ---- classify-loop result variants ----
@@ -78,9 +80,12 @@ class Catalog(Protocol):
 
 
 class Parser(Protocol):
-    """The contract argentum-press expects mtgcompiler to satisfy."""
+    """The contract argentum-press's classify phase expects of its parser.
 
-    def parse(self, card: dict[str, Any]) -> _ast.ParseResult: ...
+    argentum_press.parser already satisfies this — the worker function
+    just wraps parser.parse so a ProcessPoolExecutor can pickle it."""
+
+    def parse(self, card: dict[str, Any]) -> ParseResult: ...
 
 
 class Writer(Protocol):
@@ -104,6 +109,9 @@ class PipelineReport:
     deferred_parse: tuple[DeferredParseFailed, ...] = ()
     bucket_2: tuple[DeferredEmitterGap, ...] = ()
     emitted: tuple[Emitted, ...] = ()
+    emitted_basic_lands: EmittedBasicLands | None = None
+    """The combined `<Prefix>BasicLands.kt` written for this set, if any.
+    None when basics already existed or the set has none."""
     compile_stderr: str | None = None
     """Populated only when phase 4 ran AND gradle returned non-zero."""
 
@@ -140,10 +148,12 @@ class AddSetPipeline:
 
     def run(self, limit: int | None = None) -> PipelineReport:
         cards = self._fetch(limit)
-        already, pending = self._triage(cards)
+        already, basics, pending = self._triage(cards)
         deferred_parse, bucket_1, bucket_2 = self._classify_pending(pending)
         emitted = self._emit_bucket_1(bucket_1)
-        compile_stderr = self._verify(emitted)
+        basics_emitted = self._emit_basic_lands(basics)
+        anything_written = bool(emitted) or basics_emitted is not None
+        compile_stderr = self._verify(anything_written)
 
         return PipelineReport(
             set_code=self.set_code,
@@ -151,6 +161,7 @@ class AddSetPipeline:
             deferred_parse=tuple(deferred_parse),
             bucket_2=tuple(bucket_2),
             emitted=tuple(emitted),
+            emitted_basic_lands=basics_emitted,
             compile_stderr=compile_stderr,
         )
 
@@ -166,20 +177,27 @@ class AddSetPipeline:
 
     def _triage(
         self, cards: list[dict[str, Any]]
-    ) -> tuple[list[AlreadyImplemented], list[dict[str, Any]]]:
+    ) -> tuple[
+        list[AlreadyImplemented], list[dict[str, Any]], list[dict[str, Any]]
+    ]:
         implemented = existing.implemented_cards_in_set(self.project_dir, self.set_code)
         already: list[AlreadyImplemented] = []
+        basics: list[dict[str, Any]] = []
         pending: list[dict[str, Any]] = []
         for card in cards:
             front = existing.front_face(card["name"])
             if front in implemented:
                 already.append(AlreadyImplemented(card["name"]))
+            elif is_basic_land(card):
+                basics.append(card)
             else:
                 pending.append(card)
         self.reporter.phase_triage_end(
-            already_implemented=len(already), pending=len(pending)
+            already_implemented=len(already),
+            basic_lands=len(basics),
+            pending=len(pending),
         )
-        return already, pending
+        return already, basics, pending
 
     # ---- phase 2: classify ----
 
@@ -255,13 +273,40 @@ class AddSetPipeline:
         self.reporter.phase_emit_end(len(emitted))
         return emitted
 
+    # ---- phase 3b: emit basic lands ----
+
+    def _emit_basic_lands(
+        self, basics: list[dict[str, Any]]
+    ) -> EmittedBasicLands | None:
+        self.reporter.phase_basics_start(len(basics))
+        if not basics:
+            self.reporter.phase_basics_skipped("no basic lands to emit")
+            return None
+        prefix = self._basic_lands_prefix(basics)
+        path = existing.basic_lands_file(self.project_dir, self.set_code, prefix)
+        kotlin = render_basic_lands(self.set_code, prefix, basics)
+        self.writer.write(path, kotlin)
+        outcome = EmittedBasicLands(path=path, count=len(basics))
+        self.reporter.basics_emitted(outcome)
+        return outcome
+
+    def _basic_lands_prefix(self, basics: list[dict[str, Any]]) -> str:
+        """Prefer the identifier from `<set>/*Set.kt` (e.g. SpiderManSet ->
+        'SpiderMan'). For brand-new sets without a `*Set.kt` yet, fall back to
+        PascalCase of Scryfall's `set_name`."""
+        from_engine = existing.set_object_prefix(self.project_dir, self.set_code)
+        if from_engine:
+            return from_engine
+        set_name = basics[0].get("set_name") if basics else None
+        return pascal_case(set_name or self.set_code)
+
     # ---- phase 4: verify (single shot, optional) ----
 
-    def _verify(self, emitted: list[Emitted]) -> str | None:
+    def _verify(self, anything_written: bool) -> str | None:
         if self.verifier is None:
             self.reporter.phase_verify_skipped("no verifier configured (--skip-verify)")
             return None
-        if not emitted:
+        if not anything_written:
             self.reporter.phase_verify_skipped("nothing was emitted")
             return None
         self.reporter.phase_verify_start()
@@ -291,7 +336,7 @@ def _cache_label(catalog: Catalog) -> str:
     return state.source
 
 
-def _format_error(error: _ast.ParseError | None) -> str:
+def _format_error(error: ParseError | None) -> str:
     if error is None:
         return "parse failed with no error detail"
     if error.position is not None:
@@ -336,17 +381,18 @@ _worker_lowerer: KotlinLowerer | None = None
 
 def _classify_card_worker(card: dict[str, Any]) -> _ClassifyResult:
     """Top-level worker entry — must be importable so ProcessPoolExecutor can
-    pickle it. Workers always parse via mtgcompiler directly; the pipeline's
-    injected `parser` is only honored on the serial path (see workers field)."""
+    pickle it. Workers always parse via argentum_press.parser directly; the
+    pipeline's injected `parser` is only honored on the serial path (see
+    workers field)."""
     global _worker_parser, _worker_lowerer
     if _worker_parser is None:
-        import mtgcompiler  # type: ignore[import-untyped]
+        from argentum_press import parser
 
-        class _MtgCompilerParser:
-            def parse(self, card: dict[str, Any]) -> _ast.ParseResult:
-                return mtgcompiler.parse(card)  # type: ignore[no-any-return]
+        class _BuiltinParser:
+            def parse(self, card: dict[str, Any]) -> ParseResult:
+                return parser.parse(card)
 
-        _worker_parser = _MtgCompilerParser()
+        _worker_parser = _BuiltinParser()
     if _worker_lowerer is None:
         _worker_lowerer = KotlinLowerer()
     result = _classify_one(card, _worker_parser, _worker_lowerer)

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import _ast
 from .lowerer import EmitterGap, KotlinLowerer
+from .parser import ast as _ast
 
 
 @dataclass(frozen=True, slots=True)
