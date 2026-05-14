@@ -524,3 +524,14 @@ class PreventDamageExpression(EffectExpression):
     """
 
     descriptors: tuple[Expression, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RedirectAllDamageExpression(EffectExpression):
+    """``all <damage> that would be dealt to <a> is dealt to <b> instead``.
+
+    Surface-only stub mirroring [[PreventDamageExpression]]; carries the
+    matched children so future lowering can read them.
+    """
+
+    descriptors: tuple[Expression, ...] = ()

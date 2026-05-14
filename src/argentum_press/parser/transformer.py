@@ -152,6 +152,7 @@ from argentum_press.parser.ast import (
     PTExpression,
     RampageAbility,
     RecoverAbility,
+    RedirectAllDamageExpression,
     RegularAbility,
     ReinforceAbility,
     ReminderText,
@@ -1688,6 +1689,17 @@ class CardTransformer(Transformer):
             else:
                 descriptors.append(it)
         return PreventDamageExpression(descriptors=tuple(descriptors))
+
+    def redirectalldamageexpression(self, items):
+        # "all" DAMAGETYPE "that" "would" "be" "dealt" "to" declref "is" "dealt" "to" declref
+        # Surface-only stub mirroring preventdamagevariante.
+        descriptors: list[Expression] = []
+        for it in items:
+            if isinstance(it, Token):
+                descriptors.append(Name(name=str(it)))
+            else:
+                descriptors.append(it)
+        return RedirectAllDamageExpression(descriptors=tuple(descriptors))
 
     def uncastexpression(self, items):
         return UncastExpression(subject=items[0])
