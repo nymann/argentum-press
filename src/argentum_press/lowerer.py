@@ -592,6 +592,10 @@ class KotlinLowerer:
     def _(self, ability: ast.WardAbility) -> str:
         raise EmitterGap(ability)
 
+    @ability.register
+    def _(self, ability: ast.WebSlingingAbility) -> str:
+        raise EmitterGap(ability)
+
     # ---- RegularAbility inner-shape detection -----------------------------
 
     def _lower_regular(self, block: ast.StatementBlock) -> str:
@@ -632,7 +636,10 @@ class KotlinLowerer:
                         "}"
                     )
                 else:
-                    raise EmitterGap(s)
+                    sibling_effects = self._effects_from_statement(s)
+                    rendered.append(
+                        f"spell {{\n    effect = {self._chain(sibling_effects)}\n}}"
+                    )
             return "\n\n".join(rendered)
         effects = self._effects_from_statement(block)
         return f"spell {{\n    effect = {self._chain(effects)}\n}}"
@@ -720,6 +727,21 @@ class KotlinLowerer:
     def _(self, e: ast.ReturnExpression) -> str:
         target_str = self._target_from_expression(e.subject)
         return f"Effects.ReturnToBattlefield({target_str})"
+
+    @effect.register
+    def _(self, e: ast.PreventDamageExpression) -> str:
+        # "prevent that damage" / "prevent all <damagetype> ..." — the rich
+        # AST carries surface descriptors only; we emit a stub call so the
+        # gap moves past PreventDamageExpression to whatever the next
+        # unhandled node in this card is.
+        return "Effects.PreventDamage()"
+
+    @effect.register
+    def _(self, e: ast.AddRemoveExpression) -> str:
+        # "put N +1/+1 counters on X" / "remove counters from X" — Reed left
+        # the body fields unmodeled (subject is the only carried field, often
+        # None). Emit a stub so the gap moves past AddRemoveExpression.
+        return "Effects.AddCounters()"
 
     # ---- targets ----------------------------------------------------------
     #

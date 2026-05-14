@@ -176,8 +176,8 @@ def getGrammar():
         | kwreadahead | kwravenous | kwsquad | kwprototype | kwlivingmetal
         | kwformirrodin | kwtoxic | kwbackup | kwbargain | kwcraft | kwdisguise
         | kwsolve | kwplot | kwsaddle | kwspree | kwfreerunning | kwgift
-        | kwoffspring | kwimpending
-        
+        | kwoffspring | kwimpending | kwwebslinging
+
 
         kwdeathtouch: "deathtouch"
         kwdefender: "defender"
@@ -355,6 +355,7 @@ def getGrammar():
         kwgift: "gift" declarationorreference
         kwoffspring: "offspring" cost
         kwimpending: "impending" valuenumber cost
+        kwwebslinging: "web-slinging" cost
 
         //ABILITY COSTS
 
@@ -432,7 +433,8 @@ def getGrammar():
         | qualifier | modifier | locationexpression | valuecardinal | additionalexpression | characteristicexpression
         objectpostterm: withexpression | withoutexpression | choiceexpression | ofexpression | characteristicexpression | atrandomexpression
         | "that"? dealtdamageexpression | "that" doesnthaveexpression | controlpostfix | ownpostfix | putinzonepostfix | castpostfix | "that" ispostfix | targetspostfix
-        | "that" sharepostfix | namedexpression
+        | "that" sharepostfix | namedexpression | otherthanexpression
+        otherthanexpression: "other" "than" declarationorreference
 
         //[TODO: Mana type declarations. Mana is now a first-class citizen!]
         manadeclref: manadeclaration | manareference
@@ -563,7 +565,7 @@ def getGrammar():
         diesexpression: declarationorreference? "die"["s"] timeexpression?
         gainabilityexpression: declarationorreference? "gain"["s"]  abilitysequencestatement
         loseabilityexpression: declarationorreference? "lose"["s"] abilitysequencestatement
-        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression)
+        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression)
         takeextraturnexpression: playerdeclref? "take"["s"] timeexpression
         flipcoinsexpression: playerdeclref? "flip"["s"] ("a" | valuecardinal) "coin"["s"]
         !winloseeventexpression: playerdeclref? ("lose"|"win")["s"] ("the" "flip" | "the" "game")?
@@ -622,7 +624,7 @@ def getGrammar():
         castexpression: playerdeclref? "cast"["s"] declarationorreference (castmodifier ("and" castmodifier)?)* timeexpression?
         castmodifier: "without" "paying" "its" "mana" "cost" -> castwithoutpaying //[TODO: We may be able to fold this into the pay-expression]
         | "as" "though" beingstatement -> castasthough
-        chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("from" "it")? atrandomexpression? //[TODO]
+        chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
         controlsexpression: playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
         gaincontrolexpression: playerdeclref? ("gain"["s"] | "gained") "control" "of" declarationorreference
 

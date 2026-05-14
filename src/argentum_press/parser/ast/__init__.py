@@ -90,6 +90,7 @@ from argentum_press.parser.ast.abilities import (
     UnearthAbility,
     VanishingAbility,
     WardAbility,
+    WebSlingingAbility,
 )
 from argentum_press.parser.ast.card import (
     Card,
@@ -472,6 +473,7 @@ __all__ = [
     "ValueLtExpression",
     "VanishingAbility",
     "WardAbility",
+    "WebSlingingAbility",
     "WhenStatement",
     "WheneverStatement",
     "WhileStatement",

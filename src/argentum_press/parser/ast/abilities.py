@@ -721,6 +721,14 @@ class JumpStartAbility(KeywordAbility):
 
 
 @dataclass(frozen=True, slots=True)
+class WebSlingingAbility(KeywordAbility):
+    """``Web-slinging <cost>``."""
+
+    cost: Expression
+    reminder_text: ReminderText | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class WardAbility(KeywordAbility):
     """``Ward <cost>``.
 

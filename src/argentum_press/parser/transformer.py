@@ -175,6 +175,7 @@ from argentum_press.parser.ast import (
     UntilStatement,
     VanishingAbility,
     WardAbility,
+    WebSlingingAbility,
     WhenStatement,
     WheneverStatement,
     WithExpression,
@@ -850,6 +851,9 @@ class CardTransformer(Transformer):
 
     def kwjumpstart(self, items):
         return JumpStartAbility(cost=items[0])
+
+    def kwwebslinging(self, items):
+        return WebSlingingAbility(cost=items[0])
 
     # -- Cost ---------------------------------------------------------------
 

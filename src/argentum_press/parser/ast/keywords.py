@@ -149,6 +149,7 @@ class Keyword(Enum):
     FORECAST = "forecast"
     CUMULATIVE_UPKEEP = "cumulative upkeep"
     PHASING = "phasing"
+    WEB_SLINGING = "web-slinging"
 
 
 class TriggerCondition(Enum):
