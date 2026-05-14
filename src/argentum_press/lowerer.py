@@ -623,10 +623,13 @@ class KotlinLowerer:
             if stat_mod is not None:
                 return f"spell {{\n    effect = {stat_mod}\n}}"
             # Falls through into general-effect dispatch, which will gap.
-        if any(isinstance(s, ast.WhenStatement) for s in block.statements):
+        if any(
+            isinstance(s, (ast.WhenStatement, ast.WheneverStatement))
+            for s in block.statements
+        ):
             rendered: list[str] = []
             for s in block.statements:
-                if isinstance(s, ast.WhenStatement):
+                if isinstance(s, (ast.WhenStatement, ast.WheneverStatement)):
                     trigger = _trigger_kotlin_name(s.conditional)
                     effects = self._effects_from_statement(s.consequence)
                     rendered.append(
