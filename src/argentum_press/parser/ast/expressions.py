@@ -601,3 +601,12 @@ class PutInZoneExpression(EffectExpression):
     destination: Expression
     player: Expression | None = None
     modifier: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlayExpression(EffectExpression):
+    """Play a declaration (e.g. ``play ~`` or ``you may play that card``)."""
+
+    subject: Expression
+    player: Expression | None = None
+    timing: Expression | None = None
