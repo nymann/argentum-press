@@ -1846,6 +1846,12 @@ class CardTransformer(Transformer):
         # castmodifiers, so return a marker.
         return Name(name="without-paying-mana-cost")
 
+    def castbyalternatecost(self, items):
+        # "by" "discarding" cardexpression "in" "addition" "to" "paying"
+        # possessiveterm? "other" "cost"["s"] — castexpression drops
+        # castmodifiers, so return a marker.
+        return Name(name="by-alternate-cost")
+
     def copyexpression(self, items):
         # playerdeclref? ("copy" | "copies" | "copied") declarationorreference
         # Surface-only stub mirroring castexpression: surface the
