@@ -1317,6 +1317,9 @@ class CardTransformer(Transformer):
     def thenstatement(self, items):
         return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
 
+    def insteadstatement(self, items):
+        return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.INSTEAD)
+
     def modalchoiceexpression(self, items):
         # MODALCHOICE abilityword? statementblock
         ability_word: AbilityWord | None = None

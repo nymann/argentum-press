@@ -47,6 +47,7 @@ class StatementBlock(Statement):
 class CompoundTerminator(Enum):
     THEN = "then"
     AND = "and"
+    INSTEAD = "instead"
 
 
 @dataclass(frozen=True, slots=True)
