@@ -39,6 +39,39 @@ def _resolve_models(override: str | None) -> tuple[str, str, str]:
     return P3_MODEL, P4_MODEL, P8_MODEL
 
 
+def _live_card_still_failing(
+    *, card_name: str, oracle_text: str, label: str
+) -> bool:
+    """True iff re-parsing ``card_name`` produces the same gap label as before.
+
+    Called after a grammar edit (P5/P9) to verify the live classifier
+    actually moves past the original failure — pytest by itself can miss
+    semantic misfires (wrong parent rule, dead/duplicate branch). The
+    module-level parser cache in ``parser.transformer`` is reset first so
+    the re-parse picks up the freshly-written grammar instead of the
+    pre-edit version loaded into memory.
+
+    Returns False when card_name or oracle_text is empty (e.g. replay/CLI
+    invocations without card data) — the gate degrades to a no-op rather
+    than blocking those paths.
+    """
+    if not card_name or not oracle_text:
+        return False
+    from argentum_press.parser import parse as _parse
+    from argentum_press.parser import transformer as _transformer_mod
+    _transformer_mod._PARSER = None
+    try:
+        result = _parse(oracle_text, name=card_name)
+    except Exception:  # noqa: BLE001
+        # Any non-ParseError exception (LoweringIncomplete, etc.) means
+        # parse succeeded — the gap kind has shifted from parse-error to
+        # something else, which counts as progress.
+        return False
+    if result.error is None:
+        return False
+    return result.error.message == label
+
+
 def run(
     *,
     label: str,
@@ -187,6 +220,29 @@ def run(
         f"alternative={_short(plan['alternative_text'], 80)}"
     )
 
+    # ---- P4-validate: reject duplicates --------------------------------
+    # The LLM occasionally proposes an alternative whose body already exists
+    # in the parent rule (often when P1 picks a parent that already covers
+    # the failing phrase but a different phrase is the real culprit). pytest
+    # treats the duplicate as a no-op so it can't catch this; we'd commit a
+    # dead branch and dead-end the live classifier with the same gap.
+    if edits.alternative_already_exists(parent_rule_source, plan["alternative_text"]):
+        result.outcome = "aborted-p4-duplicate"
+        result.final_plan = plan
+        log_step(
+            steps, "P4-validate", "orch", time.monotonic(),
+            error=(
+                f"alternative {_short(plan['alternative_text'], 80)!r} "
+                f"already exists in rule {plan['parent_rule']!r}"
+            ),
+        )
+        _say(
+            f"P4-validate: duplicate of an existing branch in "
+            f"{plan['parent_rule']!r}; aborting before P5."
+        )
+        result.steps = steps
+        return result
+
     # ---- P5: splice into grammar.py + validate --------------------------
     t0 = time.monotonic()
     try:
@@ -218,6 +274,28 @@ def run(
     log_step(steps, "P6", "orch", t0, returncode=rc, tail=_short(tail, 200))
     _say(f"P6: pytest rc={rc}")
     if rc == 0:
+        # ---- P6b: live-card classify gate ------------------------------
+        # pytest is a unit-test gate; it doesn't actually parse the card
+        # that produced the gap. A grammar edit that's syntactically fine
+        # but semantically wrong (wrong parent rule, dead branch, etc.)
+        # passes pytest and dead-ends the live classifier in the next
+        # iteration with the same label — surfaced as `abort_no_progress`
+        # one iteration later. Re-classify the originating card here so we
+        # catch this in-playbook and revert before committing.
+        live_failed = _live_card_still_failing(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        log_step(
+            steps, "P6b", "orch", time.monotonic(),
+            card_name=card_name, label=label, still_failing=live_failed,
+        )
+        _say(f"P6b: live-card classify still_failing={live_failed}")
+        if live_failed:
+            edits.revert_grammar(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.final_plan = plan
+            result.steps = steps
+            return result
         result.outcome = "applied"
         result.final_plan = plan
         result.steps = steps
@@ -261,6 +339,28 @@ def run(
     log_step(steps, "P8", "llm", t0, plan=revised)
     _say(f"P8 (LLM): revised parent_rule={revised['parent_rule']}")
 
+    # Apply the same dedupe gate on the retry. The retry prompt feeds the
+    # original parent rule's source, so the LLM can land on the same
+    # duplicate shape that P4-validate caught the first time.
+    revised_parent_rule = next(
+        (rc.rule for rc in ctx.candidates if rc.rule.name == revised["parent_rule"]),
+        parent_rule_def,
+    )
+    revised_parent_source = context.dump_rule_definitions([revised_parent_rule])
+    if edits.alternative_already_exists(revised_parent_source, revised["alternative_text"]):
+        edits.revert_grammar(edit)
+        result.outcome = "aborted-p8-duplicate"
+        result.final_plan = revised
+        log_step(
+            steps, "P8-validate", "orch", time.monotonic(),
+            error=(
+                f"revised alternative {_short(revised['alternative_text'], 80)!r} "
+                f"already exists in rule {revised['parent_rule']!r}"
+            ),
+        )
+        result.steps = steps
+        return result
+
     # ---- P9: revert + reapply ------------------------------------------
     t0 = time.monotonic()
     edits.revert_grammar(edit)
@@ -288,6 +388,20 @@ def run(
     log_step(steps, "P6-retry", "orch", t0, returncode=rc2, tail=_short(tail2, 200))
     _say(f"P6-retry: pytest rc={rc2}")
     if rc2 == 0:
+        live_failed2 = _live_card_still_failing(
+            card_name=card_name, oracle_text=oracle_text, label=label,
+        )
+        log_step(
+            steps, "P6b-retry", "orch", time.monotonic(),
+            card_name=card_name, label=label, still_failing=live_failed2,
+        )
+        _say(f"P6b-retry: live-card classify still_failing={live_failed2}")
+        if live_failed2:
+            edits.revert_grammar(edit)
+            result.outcome = "aborted-classify-unchanged"
+            result.final_plan = revised
+            result.steps = steps
+            return result
         result.outcome = "applied-after-retry"
         result.final_plan = revised
         result.steps = steps

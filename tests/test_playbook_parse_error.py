@@ -248,6 +248,9 @@ def test_driver_happy_path(monkeypatch, tmp_path: Path):
     # require building the full grammar; the splice is exercised on the
     # real grammar but we don't re-validate.
     monkeypatch.setattr(edits, "_validate_grammar_compiles", lambda p: None)
+    # Skip the live-card classify gate (covered by its own test); a real
+    # parse() here would recompile the grammar and add ~10s to this test.
+    monkeypatch.setattr(parse_error, "_live_card_still_failing", lambda **_kw: False)
     oracle = "then also " + _OPEN_ENDED_ORACLE
     target = _ranked_target_rule(oracle)
 
@@ -287,6 +290,7 @@ def test_driver_happy_path(monkeypatch, tmp_path: Path):
 
 def test_driver_retry_on_pytest_red(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(edits, "_validate_grammar_compiles", lambda p: None)
+    monkeypatch.setattr(parse_error, "_live_card_still_failing", lambda **_kw: False)
     oracle = "then also " + _OPEN_ENDED_ORACLE
     target = _ranked_target_rule(oracle)
 
@@ -366,3 +370,150 @@ def test_driver_aborts_when_llm_picks_unknown_rule(monkeypatch, tmp_path: Path):
         verbose=False,
     )
     assert result.outcome == "aborted-p3"
+
+
+# ---------------------------------------------------------------------------
+# Dedupe + live-card classify gate (catch silent misfires)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_branch_body_strips_pipe_arrow_and_whitespace():
+    assert (
+        edits.normalize_branch_body('  | "in" "a"   "random" "order" -> foo ')
+        == '"in" "a" "random" "order"'
+    )
+    assert (
+        edits.normalize_branch_body('"only" expression')
+        == '"only" expression'
+    )
+
+
+def test_alternative_already_exists_detects_duplicate():
+    parent_rule_source = (
+        'zoneplacementmodifier: "on" "top" -> ontopplacement\n'
+        '| "on" "the" "bottom" -> onbottomplacement\n'
+        '| "in" "a" "random" "order" -> randomorderplacement\n'
+    )
+    # Same body, label optional — both should match.
+    assert edits.alternative_already_exists(
+        parent_rule_source, '"in" "a" "random" "order" -> randomorderplacement'
+    )
+    assert edits.alternative_already_exists(
+        parent_rule_source, '"in" "a" "random" "order"'
+    )
+    # Different body — not a duplicate.
+    assert not edits.alternative_already_exists(
+        parent_rule_source, '"in" "alphabetical" "order"'
+    )
+
+
+def test_driver_aborts_on_p4_duplicate(monkeypatch, tmp_path: Path):
+    # P4 emits an alternative that already exists in the parent rule's
+    # body. The playbook must abort BEFORE applying any grammar edit (no
+    # changes to grammar.py, no commit).
+    monkeypatch.setattr(edits, "_validate_grammar_compiles", lambda p: None)
+    oracle = "then also " + _OPEN_ENDED_ORACLE
+    target = _ranked_target_rule(oracle)
+
+    # Re-use a real existing branch from the chosen parent rule — pull it
+    # straight from the grammar so the duplicate detection has something
+    # real to match. Walk rule.source (raw grammar, no line-number prefix)
+    # for either a header body or a `| …` branch.
+    rule = next(r for r in context.grammar_rule_index() if r.name == target)
+    duplicate_body: str | None = None
+    for line in rule.source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            body = stripped[1:].lstrip()
+        elif ":" in stripped:
+            body = stripped.split(":", 1)[1]
+        else:
+            continue
+        if "->" in body:
+            body = body.split("->", 1)[0].rstrip()
+        body = " ".join(body.split())
+        if body:
+            duplicate_body = body
+            break
+    assert duplicate_body, f"no body found in rule {target}"
+
+    blocks = [
+        _FakeBlock(type="tool_use", name="emit_parse_parent_choice", input={
+            "parent_rule": target,
+            "missing_phrase": "x",
+            "rationale": "x",
+        }),
+        _FakeBlock(type="tool_use", name="emit_parse_alternative", input={
+            "parent_rule": target,
+            "alternative_text": duplicate_body,
+            "label": None,
+        }),
+    ]
+    client = _ScriptedClient(blocks)
+
+    grammar_path = context.GRAMMAR
+    original = grammar_path.read_text(encoding="utf-8")
+    try:
+        result = parse_error.run(
+            label="parse-error:<EOF>@t",
+            project_dir=tmp_path,
+            client=client,
+            pytest_runner=_green_pytest,
+            card_name="Fake",
+            oracle_text=oracle,
+            pe_block="(fake pe block)",
+            verbose=False,
+        )
+    finally:
+        # No edit should have been applied, but write the original back as
+        # a safety net so a failing test never leaves grammar.py dirty.
+        grammar_path.write_text(original, encoding="utf-8")
+    assert result.outcome == "aborted-p4-duplicate", result.as_json()
+    assert grammar_path.read_text(encoding="utf-8") == original
+
+
+def test_driver_aborts_when_live_classify_unchanged(monkeypatch, tmp_path: Path):
+    # Pytest passes (green runner) but the originally-failing card still
+    # produces the same gap label when re-classified. The playbook must
+    # revert the grammar edit and abort instead of returning "applied".
+    monkeypatch.setattr(edits, "_validate_grammar_compiles", lambda p: None)
+    monkeypatch.setattr(
+        parse_error,
+        "_live_card_still_failing",
+        lambda **_kw: True,
+    )
+    oracle = "then also " + _OPEN_ENDED_ORACLE
+    target = _ranked_target_rule(oracle)
+
+    blocks = [
+        _FakeBlock(type="tool_use", name="emit_parse_parent_choice", input={
+            "parent_rule": target,
+            "missing_phrase": "deals damage",
+            "rationale": "y",
+        }),
+        _FakeBlock(type="tool_use", name="emit_parse_alternative", input={
+            "parent_rule": target,
+            "alternative_text": '"then" "also" statement',
+            "label": "thenalsostatement",
+        }),
+    ]
+    client = _ScriptedClient(blocks)
+
+    grammar_path = context.GRAMMAR
+    original = grammar_path.read_text(encoding="utf-8")
+    try:
+        result = parse_error.run(
+            label="parse-error:<EOF>@t",
+            project_dir=tmp_path,
+            client=client,
+            pytest_runner=_green_pytest,
+            card_name="Fake Card",
+            oracle_text=oracle,
+            pe_block="(fake pe block)",
+            verbose=False,
+        )
+    finally:
+        grammar_path.write_text(original, encoding="utf-8")
+    assert result.outcome == "aborted-classify-unchanged", result.as_json()
+    # Grammar must be reverted before the playbook returns.
+    assert grammar_path.read_text(encoding="utf-8") == original
