@@ -602,6 +602,10 @@ class KotlinLowerer:
         * ``UntilStatement(end of turn, ...)`` carrying ``target X gets +N/+M``
           -> stat-mod spell.
         * One or more ``ExpressionStatement``\\ s -> spell with chained effects.
+        * Block containing a top-level ``WhenStatement`` -> emit each block
+          statement as its own ability (When -> ``triggeredAbility``); a
+          When-trigger is structurally an ability, not an effect, so the
+          block-as-spell fallback would misclassify it.
 
         Any other shape gaps via ``_effects_from_statement``.
         """
@@ -615,6 +619,21 @@ class KotlinLowerer:
             if stat_mod is not None:
                 return f"spell {{\n    effect = {stat_mod}\n}}"
             # Falls through into general-effect dispatch, which will gap.
+        if any(isinstance(s, ast.WhenStatement) for s in block.statements):
+            rendered: list[str] = []
+            for s in block.statements:
+                if isinstance(s, ast.WhenStatement):
+                    trigger = _trigger_kotlin_name(s.conditional)
+                    effects = self._effects_from_statement(s.consequence)
+                    rendered.append(
+                        "triggeredAbility {\n"
+                        f"    trigger = Triggers.{trigger}\n"
+                        f"    effect = {self._chain(effects)}\n"
+                        "}"
+                    )
+                else:
+                    raise EmitterGap(s)
+            return "\n\n".join(rendered)
         effects = self._effects_from_statement(block)
         return f"spell {{\n    effect = {self._chain(effects)}\n}}"
 
@@ -672,6 +691,8 @@ class KotlinLowerer:
             for s in stmt.statements:
                 out2.extend(self._effects_from_statement(s))
             return tuple(out2)
+        if isinstance(stmt, ast.IfStatement):
+            return self._effects_from_statement(stmt.consequence)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
@@ -695,6 +716,11 @@ class KotlinLowerer:
         amount = _number_int(e.quantity)
         return f"Effects.DrawCards({amount})"
 
+    @effect.register
+    def _(self, e: ast.ReturnExpression) -> str:
+        target_str = self._target_from_expression(e.subject)
+        return f"Effects.ReturnToBattlefield({target_str})"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
@@ -706,6 +732,8 @@ class KotlinLowerer:
 
         Mirrors :func:`argentum_press.parser.bridge._lower_target`.
         """
+        if isinstance(node, ast.GenericDeclarationExpression):
+            return self._target_from_expression(node.definition)
         if isinstance(node, ast.TargetExpression):
             if node.is_any:
                 return 'target("any target", Targets.Any)'

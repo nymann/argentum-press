@@ -464,7 +464,7 @@ def getGrammar():
         anytargetexpression: "any" "target" //Special nullary variant
 
         reference: neutralreference | selfreference | namereference
-        neutralreference: "it" | "them"
+        neutralreference: "it" | "them" | "he" | "him" | "she" | "her"
         selfreference: "itself" | "himself" | "herself" -> selfreference
         namereference: NAMEREFSYMBOL
 
@@ -533,8 +533,9 @@ def getGrammar():
         // | valueexpression DAMAGETYPE ("to" declarationorreference)?  (","? quantityrulemodification)* -> dealsdamagevariantaimplied //variant a, implied antecedent
         // | declarationorreference ("deal"["s"]|"dealt") DAMAGETYPE valueexpression ("to" declarationorreference)?  (","? quantityrulemodification)* -> dealsdamagevariantb
         // | declarationorreference ("deal"["s"]|"dealt") DAMAGETYPE ("to" declarationorreference)?  valueexpression  (","? quantityrulemodification)* -> dealsdamagevariantc
-        dealsdamageexpression: declarationorreference? "deal"["s"] valueexpression? DAMAGETYPE ("to" declarationorreference)? (","? quantityrulemodification)* 
+        dealsdamageexpression: declarationorreference? "deal"["s"] valueexpression? DAMAGETYPE ("to" declarationorreference)? (","? quantityrulemodification)*
         | valueexpression DAMAGETYPE ("to" declarationorreference)?  (","? quantityrulemodification)*
+        | DAMAGETYPE "would" "be" "dealt" "to" declarationorreference timeexpression?
         preventdamageexpression: "prevent" "the" "next" valueexpression DAMAGETYPE "that" "would" "be" "dealt" "to" declarationorreference timeexpression? -> preventdamagevarianta
         | "prevent" "the" "next" valueexpression DAMAGETYPE "that" declarationorreference "would" "deal" "to" declarationorreference timeexpression? -> preventdamagevariantb
         | "prevent" "all" DAMAGETYPE "that" "would" "be" "dealt" ("to" declarationorreference)? timeexpression? -> preventdamagevariantc
@@ -831,7 +832,7 @@ def getGrammar():
         | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" // TODO: ensure 'suspected' works properly
         TAPPEDSTATUSMODIFIER: "tapped" | "untapped"
         EFFECTSTATUSMODIFIER: "named" | "chosen" | "chosen at random" | "revealed" | "returned" | "destroyed" | "exiled" | "died" | "countered" | "sacrificed"
-        | "the target of a spell or ability" | "prevented" | "created"
+        | "the target of a spell or ability" | "prevented" | "created" | "cast"
         controlmodifier: "under" referencedecorator+ "control"
         attachmentmodifier: "attached" ("only"? "to" declarationorreference)? -> attachedmodifier
         | "unattached" ("from" declarationorreference)? -> unattachedmodifier

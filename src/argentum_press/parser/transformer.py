@@ -44,6 +44,7 @@ from lark.exceptions import LarkError, UnexpectedInput
 from argentum_press.parser.ast import (
     AbilitySequenceStatement,
     AbsorbAbility,
+    AddRemoveExpression,
     AffinityAbility,
     AfflictAbility,
     AmplifyAbility,
@@ -134,6 +135,7 @@ from argentum_press.parser.ast import (
     OverloadAbility,
     PartnerAbility,
     PoisonousAbility,
+    PreventDamageExpression,
     ProtectionAbility,
     ProwlAbility,
     PTExpression,
@@ -894,6 +896,12 @@ class CardTransformer(Transformer):
         word = str(items[0]) if items else ""
         return NumberValue(value=word, ntype=NumberTypeEnum.FREQUENCY)
 
+    def thatmanyexpression(self, items):
+        # `!thatmanyexpression: valuefrequency? "that" ("much"|"many")`. The
+        # `!` keeps the "that"/"much"/"many" tokens; we surface "that many" as a
+        # CUSTOM NumberValue so it slots into the valueexpression path.
+        return NumberValue(value="that many", ntype=NumberTypeEnum.CUSTOM)
+
     def valuecustom(self, items):
         # "x" or "*" - empty items because the grammar matches a literal.
         # The actual character is recoverable from the parse tree only if
@@ -1037,6 +1045,12 @@ class CardTransformer(Transformer):
     def possessivereference(self, items):
         return None
 
+    def possessiveterm(self, items):
+        # `!possessiveterm: "its" | "your" | "their" | <ref>("'s"|"'") | ...`
+        # Surface-only marker; downstream (zonedeclarationexpression, time*) is
+        # the consumer and only cares about presence, not the literal owner.
+        return None
+
     # -- Reference terms ---------------------------------------------------
 
     def reference(self, items):
@@ -1173,6 +1187,15 @@ class CardTransformer(Transformer):
         if len(items) == 1:
             return BeingStatement(rhs=items[0])
         return BeingStatement(lhs=items[0], rhs=items[1])
+
+    def isstatement(self, items):
+        # `<subject> is/was/are [each] [still|not] <rhs>` -> BeingStatement.
+        # The grammar tags this rule with `!`, so the is/was/are/each/still/not
+        # tokens come through as Tokens we drop here.
+        non_token = [it for it in items if not isinstance(it, Token)]
+        if len(non_token) == 1:
+            return BeingStatement(rhs=non_token[0])
+        return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
 
     # -- Compound statements ----------------------------------------------
 
@@ -1390,6 +1413,30 @@ class CardTransformer(Transformer):
 
     def revealexpression(self, items):
         return RevealExpression()
+
+    def countertype(self, items):
+        # `countertype: ptchangeexpression | WORD`. Pass the matched child
+        # through — its surface form (PTExpression or Name) is what consumers
+        # like putcounterexpression want.
+        token = items[0]
+        return Name(name=str(token)) if isinstance(token, Token) else token
+
+    def putcounterexpression(self, items):
+        # `playerdeclref? "put"["s"] ("a"|valueexpression) countertype "counter"["s"] "on" <ref>`
+        # Day-one stub: collapse to AddRemoveExpression carrying the target.
+        subject = items[-1] if items else None
+        return AddRemoveExpression(subject=subject)
+
+    def preventdamagevariante(self, items):
+        # "prevent that <DAMAGETYPE>" / "prevent all <DAMAGETYPE> that? <ref>? would deal ..."
+        # Surface-only stub: carry the matched children so future lowering can read them.
+        descriptors: list[Expression] = []
+        for it in items:
+            if isinstance(it, Token):
+                descriptors.append(Name(name=str(it)))
+            else:
+                descriptors.append(it)
+        return PreventDamageExpression(descriptors=tuple(descriptors))
 
     def uncastexpression(self, items):
         return UncastExpression(subject=items[0])

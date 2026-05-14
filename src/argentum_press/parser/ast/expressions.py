@@ -498,3 +498,14 @@ class PutInZoneExpression(EffectExpression):
 @dataclass(frozen=True, slots=True)
 class RevealExpression(EffectExpression):
     """Reveal effect placeholder; Reed left this stubbed."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreventDamageExpression(EffectExpression):
+    """``prevent that damage`` / ``prevent all <damage> ...`` placeholder.
+
+    Carries surface descriptors (damage type, optional source/target) as a
+    tuple so future lowering can inspect the shape.
+    """
+
+    descriptors: tuple[Expression, ...] = ()
