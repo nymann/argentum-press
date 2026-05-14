@@ -23,6 +23,7 @@ during the transition); see that module for prose discussion.
 """
 from __future__ import annotations
 
+import re
 from enum import Enum
 from functools import singledispatchmethod
 from typing import Any
@@ -268,6 +269,36 @@ def _find_target_subject(node: Any) -> ast.TargetExpression | None:
     return None
 
 
+# Colored mana symbols are wrapped one level deeper by the transformer
+# (``Name(name="Name(name='U')")``); strip the outer wrapper so the
+# rendered literal is the expected ``{U}`` rather than ``{Name(name='U')}``.
+_NAME_REPR_RE = re.compile(r"^Name\(name=['\"](.+)['\"]\)$")
+
+
+def _kicker_cost_string(cost: Any) -> str | None:
+    """Render a KickerAbility cost into the engine's ``"{1}{U}"`` literal form."""
+    if isinstance(cost, ast.CostSequenceExpression):
+        parts: list[str] = []
+        for arg in cost.arguments:
+            sub = _kicker_cost_string(arg)
+            if sub is None:
+                return None
+            parts.append(sub)
+        return "".join(parts)
+    if isinstance(cost, ast.ManaExpression):
+        out = ""
+        for sym in cost.symbols:
+            if not isinstance(sym, ast.Name):
+                return None
+            name = sym.name
+            m = _NAME_REPR_RE.match(name)
+            if m:
+                name = m.group(1)
+            out += "{" + name + "}"
+        return out
+    return None
+
+
 def _equip_cost_string(cost: Any) -> str | None:
     """Render an EquipAbility cost into the engine's ``"{2}"`` literal form."""
     if isinstance(cost, ast.CostSequenceExpression):
@@ -472,7 +503,11 @@ class KotlinLowerer:
 
     @ability.register
     def _(self, ability: ast.KickerAbility) -> str:
-        raise EmitterGap(ability)
+        cost_str = _kicker_cost_string(ability.cost)
+        if cost_str is None:
+            raise EmitterGap(ability)
+        factory = "multikicker" if ability.is_multi else "kicker"
+        return f'keywordAbility(KeywordAbility.{factory}("{cost_str}"))'
 
     @ability.register
     def _(self, ability: ast.FlashbackAbility) -> str:
