@@ -53,7 +53,7 @@ class CompileVerifier:
         self.timeout_seconds = timeout_seconds
 
     def verify(self) -> CompileResult:
-        gradlew = self.project_dir / "gradlew"
+        gradlew = (self.project_dir / "gradlew").resolve()
         if not gradlew.exists():
             raise GradleNotFoundError(f"no gradlew at {gradlew}")
         env = dict(os.environ)

@@ -34,7 +34,7 @@ def test_phase_headers_separate_sections() -> None:
 
 def test_classify_emits_per_card_progress() -> None:
     reporter, sink = _new_reporter()
-    reporter.phase_triage_end(already_implemented=180, pending=3)
+    reporter.phase_triage_end(already_implemented=180, basic_lands=0, pending=3)
     reporter.phase_classify_start(3)
     reporter.card_classified_bucket_1("Lightning Bolt")
     reporter.card_classified_bucket_2(
@@ -54,7 +54,7 @@ def test_classify_emits_per_card_progress() -> None:
 
 def test_emit_announces_path() -> None:
     reporter, _ = _new_reporter()
-    reporter.phase_triage_end(already_implemented=0, pending=1)
+    reporter.phase_triage_end(already_implemented=0, basic_lands=0, pending=1)
     reporter.phase_classify_start(1)
     reporter.card_classified_bucket_1("Test Bird")
     reporter.phase_emit_start(1)
@@ -66,7 +66,7 @@ def test_emit_announces_path() -> None:
 
 def test_emit_message_mentions_path() -> None:
     reporter, sink = _new_reporter()
-    reporter.phase_triage_end(already_implemented=0, pending=1)
+    reporter.phase_triage_end(already_implemented=0, basic_lands=0, pending=1)
     reporter.phase_classify_start(1)
     reporter.card_classified_bucket_1("Test Bird")
     reporter.phase_emit_start(1)
@@ -89,11 +89,13 @@ def test_null_reporter_swallows_every_event() -> None:
     # pipeline; any future Reporter method must be no-op-safe here too.
     n.phase_triage_start("x")
     n.phase_triage_fetched(0, "miss")
-    n.phase_triage_end(already_implemented=0, pending=0)
+    n.phase_triage_end(already_implemented=0, basic_lands=0, pending=0)
     n.phase_classify_start(0)
     n.phase_classify_end(bucket_1=0, bucket_2=0, parse_failed=0)
     n.phase_emit_start(0)
     n.phase_emit_end(0)
+    n.phase_basics_start(0)
+    n.phase_basics_skipped("none")
     n.phase_verify_start()
     n.phase_verify_skipped("nothing")
     n.phase_verify_passed()

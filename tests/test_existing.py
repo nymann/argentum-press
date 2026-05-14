@@ -8,9 +8,12 @@ from pathlib import Path
 import pytest
 
 from argentum_press.existing import (
+    basic_lands_file,
     cards_dir,
     front_face,
     implemented_cards_in_set,
+    set_object_prefix,
+    set_root_dir,
 )
 
 
@@ -101,3 +104,22 @@ def test_other_set_directories_are_ignored(tmp_path: Path) -> None:
 )
 def test_front_face_strips_back_after_double_slash(raw: str, expected: str) -> None:
     assert front_face(raw) == expected
+
+
+def test_set_object_prefix_extracts_from_set_kt(tmp_path: Path) -> None:
+    root = set_root_dir(tmp_path, "spm")
+    root.mkdir(parents=True)
+    (root / "SpiderManSet.kt").write_text(
+        "object SpiderManSet : MtgSet {\n  override val code = \"SPM\"\n}\n"
+    )
+    assert set_object_prefix(tmp_path, "spm") == "SpiderMan"
+
+
+def test_set_object_prefix_returns_none_for_brand_new_set(tmp_path: Path) -> None:
+    assert set_object_prefix(tmp_path, "future") is None
+
+
+def test_basic_lands_file_lives_under_cards_dir(tmp_path: Path) -> None:
+    assert basic_lands_file(tmp_path, "blb", "Bloomburrow") == (
+        cards_dir(tmp_path, "blb") / "BloomburrowBasicLands.kt"
+    )

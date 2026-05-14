@@ -27,6 +27,100 @@ _RARITY: dict[str, str] = {
     "bonus": "Rarity.BONUS",
 }
 
+BASIC_LAND_SUBTYPES = ("Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes")
+
+
+def is_basic_land(card: dict[str, Any]) -> bool:
+    """Scryfall basics have a `type_line` starting with `Basic ` (covers both
+    "Basic Land — Plains" and "Basic Snow Land — Forest") and a recognised
+    basic-land subtype."""
+    type_line = card.get("type_line") or ""
+    if not type_line.startswith("Basic "):
+        return False
+    return basic_land_subtype(card) is not None
+
+
+def basic_land_subtype(card: dict[str, Any]) -> str | None:
+    """The basic-land subtype after the em-dash (Plains/Island/.../Wastes)."""
+    type_line = card.get("type_line") or ""
+    if "—" not in type_line:
+        return None
+    _, after = type_line.split("—", 1)
+    for token in after.replace("/", " ").split():
+        if token in BASIC_LAND_SUBTYPES:
+            return token
+    return None
+
+
+def render_basic_lands(
+    set_code: str,
+    set_prefix: str,
+    cards: list[dict[str, Any]],
+) -> str:
+    """Emit one combined `<Prefix>BasicLands.kt` for every basic-land printing
+    in a set. Mirrors the engine's hand-authored convention (see
+    `BloomburrowBasicLands.kt`): one `basicLand("<Subtype>") { ... }` per
+    printing, sorted by collector number, plus an aggregating `listOf(...)`
+    at the bottom."""
+    pkg = f"com.wingedsheep.mtg.sets.definitions.{set_code}.cards"
+    ordered = sorted(cards, key=_basic_sort_key)
+    lines: list[str] = []
+    lines.append(f"package {pkg}")
+    lines.append("")
+    lines.append("import com.wingedsheep.sdk.dsl.basicLand")
+    lines.append("")
+    val_names: list[str] = []
+    for card in ordered:
+        subtype = basic_land_subtype(card)
+        if subtype is None:
+            continue
+        collector = card.get("collector_number") or ""
+        val_name = f"{set_prefix}{subtype}{_identifier_suffix(collector)}"
+        val_names.append(val_name)
+        lines.append(f'val {val_name} = basicLand("{_escape(subtype)}") {{')
+        if collector:
+            lines.append(f'    collectorNumber = "{_escape(collector)}"')
+        if card.get("artist"):
+            lines.append(f'    artist = "{_escape(card["artist"])}"')
+        image_uris: dict[str, Any] = card.get("image_uris") or {}
+        image_uri: str | None = image_uris.get("normal")
+        if image_uri:
+            lines.append(f'    imageUri = "{_escape(image_uri)}"')
+        lines.append("}")
+        lines.append("")
+    lines.append(f"val {set_prefix}BasicLands = listOf(")
+    for name in val_names:
+        lines.append(f"    {name},")
+    lines.append(")")
+    return "\n".join(lines) + "\n"
+
+
+def _basic_sort_key(card: dict[str, Any]) -> tuple[int, int, str]:
+    """Order by basic-land type first (Plains, Island, ...), then collector
+    number. The type ordering matches the WUBRG colour wheel + Wastes that
+    the engine's hand-authored files use."""
+    subtype = basic_land_subtype(card) or "Wastes"
+    type_index = (
+        BASIC_LAND_SUBTYPES.index(subtype)
+        if subtype in BASIC_LAND_SUBTYPES
+        else len(BASIC_LAND_SUBTYPES)
+    )
+    collector = card.get("collector_number") or ""
+    leading_digits = ""
+    for ch in collector:
+        if ch.isdigit():
+            leading_digits += ch
+        else:
+            break
+    collector_num = int(leading_digits) if leading_digits else 10_000_000
+    return (type_index, collector_num, collector)
+
+
+def _identifier_suffix(collector: str) -> str:
+    """Identifier-safe collector suffix; drops non-alphanumerics so e.g.
+    '262★' becomes '262'."""
+    return "".join(ch for ch in collector if ch.isalnum())
+
 
 def render(card: dict[str, Any], body: str, set_code: str) -> str:
     """Produce the full Kotlin source for one card."""

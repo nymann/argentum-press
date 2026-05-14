@@ -18,12 +18,44 @@ _CARD_DSL_RE = re.compile(r'\b(?:card|basicLand)\(\s*"([^"]+)"')
 # Matches `name = "..."` inside Printing(...) rows in reprint definitions.
 _PRINTING_NAME_RE = re.compile(r'\bname\s*=\s*"([^"]+)"')
 
+# Matches `object FooSet : MtgSet` so we can recover the engine's chosen
+# identifier prefix ("Foo") for naming the basic-lands file/vals.
+_SET_OBJECT_RE = re.compile(r'\bobject\s+(\w+)Set\s*:\s*MtgSet\b')
+
 _DEFINITIONS_REL = Path("mtg-sets/src/main/kotlin/com/wingedsheep/mtg/sets/definitions")
+
+
+def set_root_dir(project_dir: Path, set_code: str) -> Path:
+    """Where argentum-engine expects the set's top-level `*Set.kt` to live."""
+    return project_dir / _DEFINITIONS_REL / set_code
 
 
 def cards_dir(project_dir: Path, set_code: str) -> Path:
     """Where argentum-engine expects cards for `set_code` to live."""
-    return project_dir / _DEFINITIONS_REL / set_code / "cards"
+    return set_root_dir(project_dir, set_code) / "cards"
+
+
+def set_object_prefix(project_dir: Path, set_code: str) -> str | None:
+    """If `<set>/*Set.kt` declares `object FooSet : MtgSet`, return 'Foo'.
+
+    Used to derive the identifier prefix for the basic-lands file (e.g. BLB ->
+    'Bloomburrow' -> 'BloomburrowBasicLands.kt'). Returns None for brand-new
+    sets that haven't been scaffolded yet — callers fall back to the Scryfall
+    set name."""
+    root = set_root_dir(project_dir, set_code)
+    if not root.is_dir():
+        return None
+    for kt_file in root.glob("*Set.kt"):
+        text = kt_file.read_text(encoding="utf-8")
+        match = _SET_OBJECT_RE.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def basic_lands_file(project_dir: Path, set_code: str, set_prefix: str) -> Path:
+    """The expected path for a set's combined `<Prefix>BasicLands.kt`."""
+    return cards_dir(project_dir, set_code) / f"{set_prefix}BasicLands.kt"
 
 
 def implemented_cards_in_set(project_dir: Path, set_code: str) -> set[str]:

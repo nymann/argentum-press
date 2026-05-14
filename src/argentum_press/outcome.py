@@ -54,6 +54,16 @@ class CompileFailed:
     stderr: str
 
 
+@dataclass(frozen=True, slots=True)
+class EmittedBasicLands:
+    """One combined `<Prefix>BasicLands.kt` written, covering `count`
+    printings. Basics bypass the parse/classify phases entirely — they use
+    the `basicLand(...)` DSL rather than `card(...)`."""
+
+    path: Path
+    count: int
+
+
 CardOutcome = (
     AlreadyImplemented
     | Emitted

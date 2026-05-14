@@ -22,6 +22,7 @@ from .outcome import (
     DeferredEmitterGap,
     DeferredParseFailed,
     Emitted,
+    EmittedBasicLands,
 )
 
 
@@ -32,7 +33,13 @@ class Reporter(Protocol):
 
     def phase_triage_start(self, set_code: str) -> None: ...
     def phase_triage_fetched(self, total: int, cache_state: str) -> None: ...
-    def phase_triage_end(self, *, already_implemented: int, pending: int) -> None: ...
+    def phase_triage_end(
+        self,
+        *,
+        already_implemented: int,
+        basic_lands: int,
+        pending: int,
+    ) -> None: ...
 
     def phase_classify_start(self, pending: int) -> None: ...
     def card_parse_failed(
@@ -62,6 +69,10 @@ class Reporter(Protocol):
     def card_emitted(self, outcome: Emitted) -> None: ...
     def phase_emit_end(self, emitted: int) -> None: ...
 
+    def phase_basics_start(self, basics: int) -> None: ...
+    def phase_basics_skipped(self, reason: str) -> None: ...
+    def basics_emitted(self, outcome: EmittedBasicLands) -> None: ...
+
     def phase_verify_start(self) -> None: ...
     def phase_verify_skipped(self, reason: str) -> None: ...
     def phase_verify_passed(self) -> None: ...
@@ -73,7 +84,13 @@ class NullReporter:
 
     def phase_triage_start(self, set_code: str) -> None: pass
     def phase_triage_fetched(self, total: int, cache_state: str) -> None: pass
-    def phase_triage_end(self, *, already_implemented: int, pending: int) -> None: pass
+    def phase_triage_end(
+        self,
+        *,
+        already_implemented: int,
+        basic_lands: int,
+        pending: int,
+    ) -> None: pass
     def phase_classify_start(self, pending: int) -> None: pass
     def card_parse_failed(
         self,
@@ -100,6 +117,9 @@ class NullReporter:
     def phase_emit_start(self, bucket_1: int) -> None: pass
     def card_emitted(self, outcome: Emitted) -> None: pass
     def phase_emit_end(self, emitted: int) -> None: pass
+    def phase_basics_start(self, basics: int) -> None: pass
+    def phase_basics_skipped(self, reason: str) -> None: pass
+    def basics_emitted(self, outcome: EmittedBasicLands) -> None: pass
     def phase_verify_start(self) -> None: pass
     def phase_verify_skipped(self, reason: str) -> None: pass
     def phase_verify_passed(self) -> None: pass
@@ -137,8 +157,15 @@ class ConsoleReporter:
     def phase_triage_fetched(self, total: int, cache_state: str) -> None:
         self._print(f"  fetched {total} cards from Scryfall  (cache: {cache_state})")
 
-    def phase_triage_end(self, *, already_implemented: int, pending: int) -> None:
+    def phase_triage_end(
+        self,
+        *,
+        already_implemented: int,
+        basic_lands: int,
+        pending: int,
+    ) -> None:
         self._print(f"  already implemented: {already_implemented}")
+        self._print(f"  basic lands:         {basic_lands}")
         self._print(f"  pending:             {pending}")
         self._pending = pending
 
@@ -213,6 +240,17 @@ class ConsoleReporter:
 
     def phase_emit_end(self, emitted: int) -> None:
         self._print(f"  emitted: {emitted}")
+
+    # ---- basic lands ----
+
+    def phase_basics_start(self, basics: int) -> None:
+        self._header(f"phase 3b: basic lands  ({basics} printings)")
+
+    def phase_basics_skipped(self, reason: str) -> None:
+        self._print(f"  {reason}")
+
+    def basics_emitted(self, outcome: EmittedBasicLands) -> None:
+        self._print(f"  wrote {outcome.count} printings to {outcome.path}")
 
     # ---- verify ----
 
