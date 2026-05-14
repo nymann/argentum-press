@@ -934,6 +934,14 @@ class KotlinLowerer:
             # multi-effect API to consume this; emit a stub so the gap moves
             # past ModalExpression to whatever the next unhandled node is.
             return ("Effects.Modal()",)
+        if isinstance(stmt, ast.WhenStatement):
+            # Conditional/triggered wrapper: emit the consequence via the existing
+            # statement emitter so its own gaps surface next. The condition and
+            # inverted flag are threaded through a thin Effects.conditional wrapper
+            # since argentum-engine has no single DSL surface for a generic
+            # when/if construct.
+            inner = _effects_from_statement(stmt.consequence)
+            return [f"Effects.conditional({inner!r}, inverted={stmt.inverted})"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
