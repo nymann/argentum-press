@@ -73,6 +73,7 @@ from argentum_press.parser.ast import (
     ControlExpression,
     CostIncreaseStatement,
     CostSequenceExpression,
+    CreateTokenExpression,
     CrewAbility,
     CumulativeUpkeepAbility,
     CyclingAbility,
@@ -1481,6 +1482,10 @@ class CardTransformer(Transformer):
 
     def exileexpression(self, items):
         return ExileExpression(subject=items[0])
+
+    def createexpression(self, items):
+        # playerdeclref? "create"["s"] declarationorreference
+        return CreateTokenExpression(descriptor=items[-1])
 
     def returnexpression(self, items):
         # playerdeclref? "return"["s"] declarationorreference atrandomexpression?
