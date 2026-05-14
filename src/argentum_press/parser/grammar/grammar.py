@@ -40,6 +40,7 @@ def getGrammar():
 
         activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
         manaspendablestatement: "mana" "of" "any" "type" "can" "be" "spent" "to" "cast" "spells" "this" "way"
+        | "you" "do" "not" "lose" "unspent" "red" "mana" "as" "steps" "and" "phases" "end" -> manaretentionstatement
         triggerrestrictionstatement: declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?
 
         thenstatement: "then" statement
