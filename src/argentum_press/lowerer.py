@@ -813,6 +813,14 @@ class KotlinLowerer:
             # widely; argentum-engine has no top-level count-scaled Effect
             # surface yet. Emit a stub so the gap moves past ForStatement.
             return ("Effects.For()",)
+        if isinstance(stmt, ast.ExceptStatement):
+            # "<conditional>, except <Y>" — copy-with-exception replacement
+            # effect (e.g. "you may have ~ enter as a copy of a creature you
+            # control, except its name is ~"). The rich AST carries both the
+            # conditional and consequence as surface statements; argentum-engine
+            # has no top-level except-replacement Effect surface yet. Emit a
+            # stub so the gap moves past ExceptStatement.
+            return ("Effects.Except()",)
         if isinstance(stmt, ast.ModalExpression):
             # "choose one — • <option1> • <option2>" — the rich AST carries
             # each modal option as a ModalChoice with its own block, and the
