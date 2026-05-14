@@ -130,6 +130,102 @@ def run_pytest() -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
+# Post-commit live-classify gate
+# ---------------------------------------------------------------------------
+#
+# After a successful iteration commit (any fixer — playbook OR freeform),
+# spawn a fresh subprocess and re-classify the originating card. If the
+# same (kind, label) gap re-surfaces, the "fix" satisfied pytest but
+# didn't actually resolve the live failure (dead-code @register block,
+# wrong parent rule, etc.). Revert HEAD and abort the iteration so the
+# loop stops sooner than the (label, card) no-progress check would.
+#
+# The per-playbook gates (P6b / U6b / L7b) catch this earlier for their
+# own gap kinds; the orchestrator gate is the universal safety net that
+# also covers the freeform fallback and any future fixer.
+
+
+def _post_commit_classify_subprocess(
+    *, card_name: str, oracle_text: str
+) -> dict[str, Any]:
+    """Run parse + classify on a card in a fresh subprocess.
+
+    Returns one of:
+      {"result": "ok"}                            — card classifies cleanly.
+      {"result": "parse-error", "label": str}     — parse() returned an error.
+      {"result": "bucket2", "missing_node": str}  — classify says Bucket2.
+      {"result": "crash", "exception": str, ...}  — uncaught exception.
+      {"result": "subprocess-error", ...}         — couldn't launch / parse stdout.
+
+    Fresh subprocess so module-level state (singledispatch caches,
+    cached parser) reflects the on-disk source post-commit.
+    """
+    if not card_name or not oracle_text:
+        return {"result": "subprocess-error", "reason": "missing card data"}
+    probe = (
+        "import json, sys\n"
+        "from argentum_press.parser import parse\n"
+        "from argentum_press.lowerer import KotlinLowerer\n"
+        "from argentum_press.classify import classify, Bucket1, Bucket2\n"
+        f"r = parse({oracle_text!r}, name={card_name!r})\n"
+        "if r.error is not None:\n"
+        "    print(json.dumps({'result': 'parse-error', 'label': r.error.message}))\n"
+        "    sys.exit(0)\n"
+        "try:\n"
+        "    c = classify(r.ast, KotlinLowerer())\n"
+        "except BaseException as exc:\n"
+        "    print(json.dumps({'result': 'crash', 'exception': type(exc).__name__, 'message': str(exc)}))\n"
+        "    sys.exit(0)\n"
+        "if isinstance(c, Bucket1):\n"
+        "    print(json.dumps({'result': 'ok'}))\n"
+        "else:\n"
+        "    print(json.dumps({'result': 'bucket2', 'missing_node': c.missing_node}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ},
+    )
+    if proc.returncode != 0:
+        return {
+            "result": "subprocess-error",
+            "reason": f"rc={proc.returncode}",
+            "stderr": proc.stderr[-400:],
+        }
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        return {"result": "subprocess-error", "reason": str(exc)}
+
+
+def _gap_still_present(gap: Any) -> bool:
+    """True if the originating gap's (kind, label) reappears on a fresh classify.
+
+    Called after a successful iteration commit. The fix might have
+    pytest-passed without actually resolving the live failure — in
+    that case the next iteration's scan would re-find the same gap,
+    we'd hit no_progress and bail. This catches it one step earlier
+    so we can revert the bogus commit instead of leaving it in
+    history.
+    """
+    out = _post_commit_classify_subprocess(
+        card_name=gap.card_name, oracle_text=gap.oracle_text,
+    )
+    # Match by gap kind. "parse" covers both parse-error: and
+    # unmodeled-rule: labels — both surface via parse().error.message.
+    # "lower" covers Bucket2 with the AST class as missing_node.
+    if gap.kind == "lower":
+        return out.get("result") == "bucket2" and out.get("missing_node") == gap.label
+    if gap.kind == "parse":
+        return out.get("result") == "parse-error" and out.get("label") == gap.label
+    # Unknown kind — don't second-guess.
+    return False
+
+
+# ---------------------------------------------------------------------------
 # deterministic context blocks
 # ---------------------------------------------------------------------------
 
@@ -1536,9 +1632,10 @@ SUPERVISOR_STATE_PATH = Path("/tmp/argentum-press-supervisor-state.json")
 # (relaunch-only, no LLM) — empirically a fresh process often unsticks
 # the loop without a code change.
 _SUPERVISE_OUTCOMES: frozenset[str] = frozenset({
-    "abort_subprocess",  # gap subprocess crashed with non-zero rc
-    "abort_pytest",      # freeform agent's fix broke the test suite
-    "claude_error",      # claude -p itself failed
+    "abort_subprocess",            # gap subprocess crashed with non-zero rc
+    "abort_pytest",                # freeform agent's fix broke the test suite
+    "claude_error",                # claude -p itself failed
+    "abort_post_commit_unresolved", # post-commit gate caught a no-op fix
 })
 
 # Outcomes that the supervisor unsticks by simply re-executing the same
@@ -2157,6 +2254,29 @@ def main(argv: list[str] | None = None) -> int:
                 summary=summary,
                 push=not args.no_push,
             )
+
+            # Post-commit live-classify gate. Catches any fixer (playbook
+            # or freeform) whose "fix" pytest-passed without resolving
+            # the live gap — e.g. a dead-code @register handler that
+            # nothing in the dispatch chain calls. Reverts the bogus
+            # commit and aborts so we don't leave noise in history.
+            if _gap_still_present(gap):
+                stamp(
+                    f"{RED}post-commit classify: gap (kind={gap.kind}, "
+                    f"label={gap.label}, card={gap.card_name}) is unchanged "
+                    f"after the commit; reverting and aborting.{RESET}"
+                )
+                rev = subprocess.run(
+                    ["git", "revert", "--no-edit", "HEAD"],
+                    cwd=REPO, capture_output=True, text=True, check=False,
+                )
+                if rev.returncode != 0:
+                    stamp(f"{RED}revert failed: {rev.stderr[-200:]}{RESET}")
+                if recorder and rec:
+                    rec.outcome = "abort_post_commit_unresolved"
+                    rec.description = _desc()
+                    recorder.finish_iteration(rec)
+                return 2
 
         # Cache invalidation: parse-kind fixes change what the parser produces
         # for cards previously labeled with this gap, so drop those entries.
