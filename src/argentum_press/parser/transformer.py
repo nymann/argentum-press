@@ -71,6 +71,7 @@ from argentum_press.parser.ast import (
     CompoundStatement,
     CompoundTerminator,
     ControlExpression,
+    CostIncreaseStatement,
     CostSequenceExpression,
     CrewAbility,
     CumulativeUpkeepAbility,
@@ -1148,6 +1149,19 @@ class CardTransformer(Transformer):
     def characteristicexpression(self, items):
         return items[0]
 
+    def characteristicterms(self, items):
+        return items[0]
+
+    def characteristicterm(self, items):
+        # `modifier* characteristic` — modifiers are already lowered to
+        # Name pass-throughs; we don't model them on characteristics yet.
+        return items[-1]
+
+    def characteristic(self, items):
+        # OBJECTCHARACTERISTIC | PLAYERCHARACTERISTIC token — pass through
+        # as an opaque Name (same shape as modifier/qualifier).
+        return Name(name=str(items[0]))
+
     def colorexpression(self, items):
         return items[0]
 
@@ -1165,6 +1179,11 @@ class CardTransformer(Transformer):
     def withoutexpression(self, items):
         # No dedicated WithoutExpression - reuse WithExpression w/ a marker.
         # Day-one stand-in.
+        return WithExpression(operand=items[0]) if items else WithExpression(operand=Name(name=""))
+
+    def ofexpression(self, items):
+        # `"of" declarationorreference` postterm — e.g. "spells of the chosen
+        # type". Reuse WithExpression as a day-one stand-in.
         return WithExpression(operand=items[0]) if items else WithExpression(operand=Name(name=""))
 
     # -- Object-postterm postfixes -----------------------------------------
@@ -1245,6 +1264,11 @@ class CardTransformer(Transformer):
         if len(non_token) == 1:
             return BeingStatement(rhs=non_token[0])
         return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
+
+    def costincreasestatement(self, items):
+        # `<subject> cost[s] <mana> more to cast/activate` — literal strings
+        # are dropped by the grammar, leaving the declref and the mana symbol.
+        return CostIncreaseStatement(subject=items[0], amount=items[1])
 
     # -- Compound statements ----------------------------------------------
 
@@ -1343,6 +1367,9 @@ class CardTransformer(Transformer):
         if len(items) == 1:
             return items[0]
         return DescriptionExpression(descriptors=tuple(items))
+
+    def firsttimetimeexpression(self, items):
+        return DescriptionExpression(descriptors=(Name(name="for the first time"), *items))
 
     def timeterm(self, items):
         # Pass through tokens / decorators wrapped in a Name.
@@ -1471,6 +1498,14 @@ class CardTransformer(Transformer):
         # playerdeclref? ("look"["s"]|"looked") "at"
         #   (declarationorreference | cardexpression | zonedeclarationexpression)
         return LookExpression()
+
+    def chooseexpression(self, items):
+        # playerdeclref? ("choose"["s"]|"chose") declarationorreference
+        #   ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression?
+        # Stub: surface the first child as the operand; "other than" and the
+        # at-random / from-it modifiers are dropped until a card needs them.
+        operand = items[0] if items else Name(name="")
+        return ChoiceExpression(operand=operand)
 
     def countertype(self, items):
         # `countertype: ptchangeexpression | WORD`. Pass the matched child

@@ -89,6 +89,14 @@ class BeingStatement(Statement):
 
 
 @dataclass(frozen=True, slots=True)
+class CostIncreaseStatement(Statement):
+    """``<spells> cost {X} more to cast/activate``."""
+
+    subject: Expression
+    amount: Expression
+
+
+@dataclass(frozen=True, slots=True)
 class IsStatement(Statement):
     """Reed left this stubbed; carried forward as a marker."""
 

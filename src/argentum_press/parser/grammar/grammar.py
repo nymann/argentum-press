@@ -536,6 +536,7 @@ def getGrammar():
         // | declarationorreference ("deal"["s"]|"dealt") DAMAGETYPE valueexpression ("to" declarationorreference)?  (","? quantityrulemodification)* -> dealsdamagevariantb
         // | declarationorreference ("deal"["s"]|"dealt") DAMAGETYPE ("to" declarationorreference)?  valueexpression  (","? quantityrulemodification)* -> dealsdamagevariantc
         dealsdamageexpression: declarationorreference? "deal"["s"] valueexpression? DAMAGETYPE ("to" declarationorreference)? (","? quantityrulemodification)*
+        | declarationorreference? "deal"["s"] DAMAGETYPE valueexpression ("to" declarationorreference)? (","? quantityrulemodification)*
         | valueexpression DAMAGETYPE ("to" declarationorreference)?  (","? quantityrulemodification)*
         | DAMAGETYPE "would" "be" "dealt" "to" declarationorreference timeexpression?
         preventdamageexpression: "prevent" "the" "next" valueexpression DAMAGETYPE "that" "would" "be" "dealt" "to" declarationorreference timeexpression? -> preventdamagevarianta
@@ -740,6 +741,7 @@ def getGrammar():
         //TYPE/MANA/COLOR EXPRESSIONS, MODIFIERS, AND MISCELLANEOUS
 
         timeexpression: startendspecifier? timeterm ("of" timeexpression)? ("on" possessiveterm timemodifier* PHASE)?
+        | "for" "the" "first" "time" timeexpression -> firsttimetimeexpression
         startendspecifier: "the"? "beginning" "of" -> timebeginmodifier
         | "the"? "end" "of" -> timeendmodifier
         timeterm: (referencedecorator* | declarationdecorator*) possessiveterm* timemodifier* (PHASE | STEP | TURN | GAME |  "one")
