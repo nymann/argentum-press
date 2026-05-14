@@ -356,151 +356,128 @@ def gather_context(
 # ---------------------------------------------------------------------------
 
 
-_COMMON_TAIL = """
-FILES YOU MAY EDIT
-  src/argentum_press/parser/transformer.py   (~1900 lines)
-  src/argentum_press/parser/ast/*.py         (frozen-dataclass AST nodes)
-  src/argentum_press/parser/grammar/grammar.py (~940 lines; only for parse-error)
-  src/argentum_press/lowerer.py              (AST -> Kotlin DSL)
-
-DISCIPLINE
-  - All needed signal is above. Don't re-run diagnose; the orchestrator runs
-    it again before the next iteration.
-  - Don't run pytest more than once unless you've made a follow-up edit.
-  - Don't commit; the orchestrator owns commits.
-  - For lowerer.py / transformer.py: grep before Read - they're 1k+ lines.
-  - The minimum edit to move this gap is the goal. No refactors, no
-    drive-by cleanup, no unrelated rule changes.
-
-WORKFLOW
-  1. Make the minimum edit.
-  2. Run pytest:
-     uv run pytest tests/test_diagnose.py tests/test_pipeline.py \\
-       tests/test_lowerer.py tests/test_classify.py -x -q -n auto
-  3. If pytest red, fix and re-run.
-"""
-
-
-def render_prompt_lower(ctx: GapContext) -> str:
-    parts = [
-        "Fix one lowerer gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text:",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=lower  label={ctx.label}",
-        "  An AST node parsed cleanly but lowerer.py has no @register handler",
-        "  for it. Add one handler. Do NOT change the AST or transformer.",
-        "",
-        "GAP AST CLASS DEFINITION (the fields the new handler will receive)",
-        ctx.gap_class_def or "  (not found in parser/ast/; grep src/ for it)",
-        "",
-        "PARSED AST FOR THIS CARD (where the gap node sits in the tree)",
-        _indent(ctx.ast_block or "(no AST)", "  "),
-        "",
-        "HANDLER MAP (every @<dispatcher>.register line in lowerer.py).",
-        "Pick a handler whose AST class is structurally similar to the GAP",
-        "AST CLASS above and mirror its body.",
-        _indent(ctx.handler_map or "(none)", "  "),
-        "",
-        "ENGINE DSL HINTS (Kotlin DSL surface in argentum-engine that already",
-        "exists for this kind of effect). Mirror existing DSL - do NOT invent.",
-        _indent(ctx.engine_hints or "(no matches)", "  "),
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING lowerer.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
-def render_prompt_parse_error(ctx: GapContext) -> str:
-    parts = [
-        "Fix one grammar gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text (raw):",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=parse  label={ctx.label}",
-        "  Lark itself rejected the preprocessed text. Either the grammar is",
-        "  missing a rule branch, or an existing rule needs a new alternative.",
-        "",
-        "PARSE ERROR DETAIL (extracted from the Lark exception; no need to",
-        "re-run the parser)",
-        ctx.parse_error_block or "  (details unavailable)",
-        "",
-        "GRAMMAR RULE INDEX (top of grammar.py; rule name -> 1-based line)",
-        ctx.grammar_index_excerpt or "  (none)",
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING grammar.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
-def render_prompt_unmodeled(ctx: GapContext) -> str:
-    parts = [
-        "Fix one transformer gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text (raw):",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=parse  label={ctx.label}",
-        "  Lark parsed the text fine, but the transformer has no method for",
-        "  the named rule (raised via __default__ -> LoweringIncomplete).",
-        "  Add a transformer method; if a new AST dataclass is needed, add it",
-        "  to parser/ast/<file>.py and mirror its frozen/slots neighbors.",
-        "",
-        "GRAMMAR RULE DEFINITION (for the failing rule)",
-        _indent(ctx.rule_def or "(not found)", "  "),
-        "",
-        "WHERE THIS RULE IS USED in grammar.py (parent rules - their",
-        "transformer methods are the natural analogs to mirror)",
-        _indent(ctx.rule_uses or "(no other references)", "  "),
-        "",
-        "GRAMMAR RULE INDEX (rules near the target; rule name -> line)",
-        ctx.grammar_index_excerpt or "  (none)",
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING transformer.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
 def render_prompt(ctx: GapContext) -> str:
-    if ctx.kind == "lower":
-        return render_prompt_lower(ctx)
-    if ctx.label.startswith("parse-error:"):
-        return render_prompt_parse_error(ctx)
-    return render_prompt_unmodeled(ctx)
+    """Backwards-compatible default: render with the baseline variant.
+
+    The main loop calls this when --prompt-variant is unset. ``--dry-run``
+    keeps the same shape too. New code should call _render_prompt_variant
+    directly so we have one place to add A/B logic.
+    """
+    return _render_prompt_variant("baseline", ctx)
+
+
+# ---------------------------------------------------------------------------
+# template-driven prompt variants (Phase 3)
+# ---------------------------------------------------------------------------
+#
+# Each variant lives under prompts/<variant>/ with three files:
+#   - lower.md          (lowerer-gap prompt)
+#   - parse-error.md    (lark rejected the preprocessed text)
+#   - unmodeled.md      (lark parsed but transformer has no rule method)
+#   - _common_tail.md   (boilerplate appended to every prompt)
+#
+# Placeholders use a minimal {{name}} syntax. We don't pull in jinja2 or
+# similar — the substitution domain is fixed and small, dependency-free
+# keeps the orchestrator easy to debug. Unknown placeholders raise so a
+# typo in a hand-edited variant surfaces immediately instead of silently
+# rendering as a literal `{{rule_def}}`.
+
+PROMPTS_DIR = REPO / "prompts"
+
+
+def _placeholders_for(ctx: GapContext) -> dict[str, str]:
+    """Build the substitution table for a single gap context.
+
+    All values are strings; multi-line blocks already include their internal
+    newlines. The ``_indented_N`` variants pre-bake the per-line indent
+    that the inline renderer used to compute via ``_indent(text, '  ' * N)``.
+    """
+    rule_def = ctx.rule_def or "(not found)"
+    rule_uses = ctx.rule_uses or "(no other references)"
+    gap_class_def = ctx.gap_class_def or "  (not found in parser/ast/; grep src/ for it)"
+    ast_block = ctx.ast_block or "(no AST)"
+    handler_map = ctx.handler_map or "(none)"
+    engine_hints = ctx.engine_hints or "(no matches)"
+    parse_error_block = ctx.parse_error_block or "  (details unavailable)"
+    grammar_index_excerpt = ctx.grammar_index_excerpt or "  (none)"
+    return {
+        "card_name": ctx.card_name,
+        "label": ctx.label,
+        "oracle_text": ctx.oracle_text,
+        "oracle_text_indented_4": _indent(ctx.oracle_text, "    "),
+        "gap_class_def": gap_class_def,
+        "ast_block_indented_2": _indent(ast_block, "  "),
+        "handler_map_indented_2": _indent(handler_map, "  "),
+        "engine_hints_indented_2": _indent(engine_hints, "  "),
+        "parse_error_block": parse_error_block,
+        "grammar_index_excerpt": grammar_index_excerpt,
+        "rule_def_indented_2": _indent(rule_def, "  "),
+        "rule_uses_indented_2": _indent(rule_uses, "  "),
+        "file_sizes": ctx.file_sizes,
+        "recent_commits_indented_2": _indent(ctx.recent_commits, "  "),
+    }
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _apply(template: str, values: dict[str, str]) -> str:
+    """Substitute every ``{{name}}`` in ``template`` with ``values[name]``.
+
+    Missing keys raise ``KeyError`` so a typo in a hand-edited variant
+    surfaces loudly instead of pasting ``{{rule_def}}`` into the agent's
+    prompt verbatim. (We don't escape ``{{`` — none of the prompt text
+    contains literal double braces.)
+    """
+    def repl(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        if name not in values:
+            raise KeyError(f"unknown prompt placeholder: {{{{ {name} }}}}")
+        return values[name]
+    return _PLACEHOLDER_RE.sub(repl, template)
+
+
+def _template_for(variant: str, kind: str) -> tuple[str, str]:
+    """Return ``(body_template, common_tail)`` for ``variant`` + ``kind``.
+
+    ``kind`` is one of ``lower``, ``parse-error``, ``unmodeled``. Trailing
+    newlines from the .md files are stripped so the join behaviour matches
+    the pre-refactor inline rendering byte-for-byte (baseline parity is a
+    test invariant).
+    """
+    base = PROMPTS_DIR / variant
+    if not base.is_dir():
+        raise FileNotFoundError(f"prompt variant '{variant}' has no directory under {PROMPTS_DIR}")
+    body_path = base / f"{kind}.md"
+    if not body_path.is_file():
+        raise FileNotFoundError(
+            f"prompt variant '{variant}' is missing {kind}.md (looked at {body_path})"
+        )
+    tail_path = base / "_common_tail.md"
+    body = body_path.read_text(encoding="utf-8").rstrip("\n")
+    tail = tail_path.read_text(encoding="utf-8").rstrip("\n") if tail_path.is_file() else ""
+    return body, tail
 
 
 def _render_prompt_variant(variant: str, ctx: GapContext) -> str:
     """Dispatch to a prompt variant by name.
 
-    Phase 1 placeholder: only "baseline" is recognised and it dispatches to the
-    inline renderer. Phase 3 replaces this with a prompts/ directory loader.
+    Templates live in ``prompts/<variant>/<kind>.md`` with ``{{name}}``
+    placeholders; the common tail (FILES YOU MAY EDIT, DISCIPLINE, WORKFLOW)
+    is shared across kinds via ``_common_tail.md``. Variant 'baseline' is
+    the in-repo default and reproduces the pre-Phase-3 inline rendering
+    byte-for-byte.
     """
-    if variant == "baseline":
-        return render_prompt(ctx)
-    raise ValueError(f"unknown prompt variant: {variant!r}")
+    if ctx.kind == "lower":
+        kind = "lower"
+    elif ctx.label.startswith("parse-error:"):
+        kind = "parse-error"
+    else:
+        kind = "unmodeled"
+    body, tail = _template_for(variant, kind)
+    values = _placeholders_for(ctx)
+    values["common_tail"] = tail
+    return _apply(body, values)
 
 
 # ---------------------------------------------------------------------------
@@ -1481,6 +1458,16 @@ def main(argv: list[str] | None = None) -> int:
 
     recorder = Recorder(args.record) if args.record else None
 
+    def _desc() -> str:
+        # Prepend the variant tag to the user-supplied description so a
+        # runs.tsv row's description column tells the full story (a tag
+        # like 'variant=h1-no-handler-map|seed-42' is greppable; the
+        # bare user description without it isn't).
+        head = f"variant={args.prompt_variant}"
+        if args.description:
+            return f"{head}|{args.description}"
+        return head
+
     if args.replay is not None:
         assert recorder is not None
         return _run_replay(
@@ -1518,7 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
             stamp(f"{RED}{e}{RESET}")
             if recorder and rec:
                 rec.outcome = "abort_subprocess"
-                rec.description = args.description
+                rec.description = _desc()
                 recorder.finish_iteration(rec)
             return 2
         if gap is None:
@@ -1531,7 +1518,7 @@ def main(argv: list[str] | None = None) -> int:
                 rec.gap_label = gap.label
                 rec.card_name = gap.card_name
                 rec.outcome = "abort_no_progress"
-                rec.description = args.description
+                rec.description = _desc()
                 recorder.finish_iteration(rec)
             return 2
 
@@ -1549,7 +1536,7 @@ def main(argv: list[str] | None = None) -> int:
         stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
               f"label={gap.label.splitlines()[0]}")
 
-        prompt = render_prompt(ctx)
+        prompt = _render_prompt_variant(args.prompt_variant, ctx)
         if args.dry_run:
             print(prompt)
             return 0
@@ -1572,7 +1559,7 @@ def main(argv: list[str] | None = None) -> int:
             stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
             if recorder and rec:
                 rec.outcome = "claude_error"
-                rec.description = args.description
+                rec.description = _desc()
                 recorder.finish_iteration(rec)
             return rc
 
@@ -1583,7 +1570,7 @@ def main(argv: list[str] | None = None) -> int:
             print(output[-2000:], file=sys.stderr)
             if recorder and rec:
                 rec.outcome = "abort_pytest"
-                rec.description = args.description
+                rec.description = _desc()
                 recorder.finish_iteration(rec)
             return rc
         stamp(f"{GREEN}pytest green.{RESET}")
@@ -1610,7 +1597,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if recorder and rec:
             rec.outcome = "pass"
-            rec.description = args.description
+            rec.description = _desc()
             recorder.finish_iteration(rec)
 
         prev_label = gap.label
