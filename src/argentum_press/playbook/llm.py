@@ -333,12 +333,12 @@ def build_strategy_blocks(
     engine_hints: str,
     ast_class_source: str,
 ) -> list[dict[str, Any]]:
+    # Anthropic accepts at most 4 cache_control blocks across the whole
+    # request (1 system + 3 user). The AST class source is the stable
+    # prefix shared across L4/L5b/L9; mark it ephemeral so the cache hits.
+    # Summary + engine hints are smaller, change less often per AST class,
+    # and don't need separate cache breakpoints — they ride the same block.
     return [
-        {
-            "type": "text",
-            "text": f"L3 SUMMARY\n\n{summary_json}",
-            "cache_control": _CACHE_CONTROL,
-        },
         {
             "type": "text",
             "text": f"AST CLASS SOURCE\n\n{ast_class_source}",
@@ -346,8 +346,10 @@ def build_strategy_blocks(
         },
         {
             "type": "text",
-            "text": f"ENGINE DSL HINTS (ripgrep over argentum-engine)\n\n{engine_hints}",
-            "cache_control": _CACHE_CONTROL,
+            "text": (
+                f"L3 SUMMARY\n\n{summary_json}\n\n"
+                f"ENGINE DSL HINTS (ripgrep over argentum-engine)\n\n{engine_hints}"
+            ),
         },
     ]
 
@@ -360,17 +362,11 @@ def build_plan_blocks(
     ast_class_source: str,
     pattern_exemplars: str,
 ) -> list[dict[str, Any]]:
+    # Cache budget: 4 cache_control blocks total (1 system + 3 user).
+    # Mark the AST class source + the relevant exemplars as ephemeral — those
+    # are stable across L5b retries within one iteration. Summary + strategy
+    # ride a single combined block (no separate cache breakpoint).
     return [
-        {
-            "type": "text",
-            "text": f"L3 SUMMARY\n\n{summary_json}",
-            "cache_control": _CACHE_CONTROL,
-        },
-        {
-            "type": "text",
-            "text": f"L4 STRATEGY\n\n{strategy_json}",
-            "cache_control": _CACHE_CONTROL,
-        },
         {
             "type": "text",
             "text": f"AST CLASS SOURCE\n\n{ast_class_source}",
@@ -378,8 +374,18 @@ def build_plan_blocks(
         },
         {
             "type": "text",
-            "text": f"PATTERN (chosen by L5a heuristic): {pattern}\n\nRELEVANT EXEMPLARS\n\n{pattern_exemplars}",
+            "text": (
+                f"PATTERN (chosen by L5a heuristic): {pattern}\n\n"
+                f"RELEVANT EXEMPLARS\n\n{pattern_exemplars}"
+            ),
             "cache_control": _CACHE_CONTROL,
+        },
+        {
+            "type": "text",
+            "text": (
+                f"L3 SUMMARY\n\n{summary_json}\n\n"
+                f"L4 STRATEGY\n\n{strategy_json}"
+            ),
         },
     ]
 
