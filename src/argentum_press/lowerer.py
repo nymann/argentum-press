@@ -66,6 +66,7 @@ class EmitterGap(RuntimeError):
 
 _TRIGGER_KOTLIN: dict[str, str] = {
     "attacks": "Attacks",
+    "cast": "YouCastSpell",
     "dies": "Dies",
     "enters": "EntersBattlefield",
     "leaves": "LeavesBattlefield",
@@ -88,6 +89,12 @@ def _find_trigger_marker(node: Any) -> str:
     if isinstance(node, ast.ChangeZoneExpression):
         # "X enters Y" / "X leaves Y"
         return "enters" if node.entering else "leaves"
+    if isinstance(node, ast.CastExpression):
+        # "<subject> cast(s) <spell>" as a trigger condition (e.g.
+        # "when you next cast a creature spell"). The rich AST carries the
+        # caster as a surface descriptor only; map to the engine's generic
+        # YouCastSpell trigger so the gap moves past CastExpression.
+        return "cast"
     if isinstance(node, ast.DescriptionExpression):
         parts = [_find_trigger_marker(d) for d in node.descriptors]
         for p in parts:
