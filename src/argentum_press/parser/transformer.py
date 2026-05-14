@@ -1814,6 +1814,11 @@ class CardTransformer(Transformer):
         subject = items[0] if items else Name(name="")
         return CastExpression(subject=subject)
 
+    def castwithoutpaying(self, items):
+        # "without" "paying" "its" "mana" "cost" — castexpression drops
+        # castmodifiers, so return a marker.
+        return Name(name="without-paying-mana-cost")
+
     def copyexpression(self, items):
         # playerdeclref? ("copy" | "copies" | "copied") declarationorreference
         # Surface-only stub mirroring castexpression: surface the
