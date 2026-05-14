@@ -176,6 +176,7 @@ from argentum_press.parser.ast import (
     SuspendAbility,
     SurgeAbility,
     SurveilAbility,
+    SurveilExpression,
     TapUntapExpression,
     TargetExpression,
     TextBox,
@@ -1648,6 +1649,10 @@ class CardTransformer(Transformer):
         # playerdeclref? ("look"["s"]|"looked") "at"
         #   (declarationorreference | cardexpression | zonedeclarationexpression)
         return LookExpression()
+
+    def surveilexpression(self, items):
+        # "surveil" valueexpression
+        return SurveilExpression(caliber=items[0])
 
     def gainlifeexpression(self, items):
         # playerdeclref? "gain"["s"] (valueexpression? "life" | "life" valueexpression)

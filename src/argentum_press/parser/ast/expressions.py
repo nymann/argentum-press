@@ -535,3 +535,10 @@ class RedirectAllDamageExpression(EffectExpression):
     """
 
     descriptors: tuple[Expression, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SurveilExpression(EffectExpression):
+    """``surveil <caliber>`` as a player-action effect (not the keyword ability)."""
+
+    caliber: Expression
