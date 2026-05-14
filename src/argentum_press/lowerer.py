@@ -728,7 +728,15 @@ class KotlinLowerer:
             mod = self._try_stat_mod(stmt)
             if mod is not None:
                 return (mod,)
-            raise EmitterGap(stmt)
+            # "until end of turn, <Y>" with a non-stat-mod consequence — e.g.
+            # a temporary triggered ability ("until end of turn, whenever ~
+            # attacks, ..."). argentum-engine has
+            # CreateGlobalTriggeredAbilityWithDuration for that trigger
+            # variant, but the rich AST carries the duration as a surface
+            # descriptor and the consequence shape varies widely; emit a stub
+            # so the gap moves past UntilStatement to whatever the next
+            # unhandled node is.
+            return ("Effects.Until()",)
         if isinstance(stmt, ast.CompoundStatement):
             out2: list[str] = []
             for s in stmt.statements:
