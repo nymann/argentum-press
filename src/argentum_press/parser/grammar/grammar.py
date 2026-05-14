@@ -619,6 +619,7 @@ def getGrammar():
         | shuffleexpression
         | tapuntapexpression
         | millexpression
+        | copyexpression
 
         activateexpression: "activate" declarationorreference
         !attacksexpression: declarationorreference? "only"? "attack"["s"] "only"? (timeexpression? declarationorreference?| declarationorreference? timeexpression?) "alone"?
@@ -633,7 +634,7 @@ def getGrammar():
         | "unattach" declarationorreference ("from" declarationorreference)? -> unattachexpression
         | playerdeclref "attaches" declarationorreference "to" declarationorreference -> playerattachesexpression
 
-        castexpression: playerdeclref? "cast"["s"] declarationorreference (castmodifier ("and" castmodifier)?)* timeexpression?
+        castexpression: playerdeclref? "next"? "cast"["s"] declarationorreference (castmodifier ("and" castmodifier)?)* timeexpression?
         castmodifier: "without" "paying" "its" "mana" "cost" -> castwithoutpaying //[TODO: We may be able to fold this into the pay-expression]
         | "as" "though" beingstatement -> castasthough
         chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
@@ -659,6 +660,7 @@ def getGrammar():
         | "untap" declarationorreference? -> untapexpression
         # millexpression: "mill" valueexpression "card"["s"]
         millexpression: playerdeclref? "mill"["s"] cardexpression
+        copyexpression: playerdeclref? ("copy" | "copies" | "copied") declarationorreference
 
         specialkeywordaction: regenerateexpression
         | scryexpression
