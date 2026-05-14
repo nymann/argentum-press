@@ -40,6 +40,29 @@ def test_grammar_rule_block_finds_known_rule():
     assert r.start_line > 0
 
 
+def test_grammar_rule_block_resolves_alias_to_parent_rule():
+    # `castbyalternatecost` is an `-> alias` of an alternative inside the
+    # `castmodifier` rule, not a top-level rule. Lark emits Trees named after
+    # the alias, so the transformer needs a per-alias handler; U0 must surface
+    # the parent rule for the LLM.
+    r = context.grammar_rule_block("castbyalternatecost")
+    assert r is not None
+    assert r.name == "castbyalternatecost"
+    assert "castmodifier:" in r.source
+    assert "-> castbyalternatecost" in r.source
+
+
+def test_gather_unmodeled_rule_for_alias_label():
+    ctx = context.gather_unmodeled_rule(
+        label="unmodeled-rule:castbyalternatecost",
+        project_dir=Path("/tmp"),
+        oracle_text="",
+    )
+    assert ctx.rule_name == "castbyalternatecost"
+    assert ctx.rule is not None
+    assert "castmodifier:" in ctx.rule.source
+
+
 def test_recent_transformer_exemplars_smoke():
     # The git log should have at least one `parser: handle <rule>` commit
     # in recent history.

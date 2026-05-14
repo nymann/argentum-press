@@ -421,6 +421,7 @@ _RULE_DECL_RE = re.compile(r"^\s+!?([a-z][a-z0-9_]*)\s*:")
 # Continuation lines start with leading whitespace + "|" (alternative branch).
 # Anything else with whitespace + identifier-colon is a fresh rule declaration.
 _LITERAL_RE = re.compile(r'"([^"\\]+)"')
+_ALIAS_RE = re.compile(r"->\s*([a-z][a-z0-9_]*)")
 
 
 def _parse_grammar_rules(text: str) -> list[GrammarRule]:
@@ -479,6 +480,70 @@ def grammar_rule_index() -> list[GrammarRule]:
     the string.
     """
     return _parse_grammar_rules(GRAMMAR.read_text(encoding="utf-8"))
+
+
+def _parse_grammar_aliases(text: str) -> list[GrammarRule]:
+    """Synthetic GrammarRule entries for every ``-> aliasname`` directive.
+
+    Lark emits Trees named after the alias (``cardmodifier: x -> foo``
+    produces a Tree named ``foo``, not ``cardmodifier``), so the transformer
+    dispatches on the alias name. When such a method is missing, classify
+    labels the gap ``unmodeled-rule:foo`` even though ``foo`` is not a
+    top-level rule declaration. U0 needs to surface these so the playbook
+    doesn't dead-end.
+
+    Source = the full parent rule body (so the LLM sees sibling branches and
+    keeps the dataclass family consistent). Aliases whose name collides with
+    their parent rule (a no-op rename Lark accepts) are skipped. Aliases that
+    also exist as top-level rules are still emitted here; ``grammar_rule_block``
+    prefers the top-level definition.
+    """
+    lines = text.splitlines()
+    out: list[GrammarRule] = []
+    seen: set[str] = set()
+    i = 0
+    while i < len(lines):
+        m = _RULE_DECL_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        parent_name = m.group(1)
+        start = i
+        end = i
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if _RULE_DECL_RE.match(nxt):
+                break
+            if not nxt.strip():
+                break
+            end = j
+        block_lines = lines[start:end + 1]
+        block = "\n".join(block_lines)
+        for line in block_lines:
+            for am in _ALIAS_RE.finditer(line):
+                alias = am.group(1)
+                if alias == parent_name or alias in seen:
+                    continue
+                seen.add(alias)
+                literals = tuple(
+                    lm.group(1).lower() for lm in _LITERAL_RE.finditer(line)
+                )
+                out.append(
+                    GrammarRule(
+                        name=alias,
+                        start_line=start + 1,
+                        end_line=end + 1,
+                        source=block,
+                        literals=literals,
+                    )
+                )
+        i = end + 1
+    return out
+
+
+def grammar_alias_index() -> list[GrammarRule]:
+    """Parse ``grammar.py`` once and return every ``-> aliasname`` directive."""
+    return _parse_grammar_aliases(GRAMMAR.read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -591,8 +656,17 @@ def gather_parse_error(
 
 
 def grammar_rule_block(rule_name: str) -> GrammarRule | None:
-    """Locate one rule by name (U0)."""
+    """Locate one rule by name (U0).
+
+    Top-level rule declarations win; ``-> aliasname`` directives fill in the
+    gap so the playbook can handle unmodeled-rule labels that name an alias
+    of a parent rule's alternative (the transformer dispatches on alias
+    names too, since Lark emits Trees with that name).
+    """
     for r in grammar_rule_index():
+        if r.name == rule_name:
+            return r
+    for r in grammar_alias_index():
         if r.name == rule_name:
             return r
     return None
