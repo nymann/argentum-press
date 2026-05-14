@@ -12,7 +12,8 @@ def getGrammar():
 
         ability : abilityword? statementblock remindertext? -> regularability
         | keywordlist remindertext?
-        abilityword: WORD+ "—"
+        abilityword: (WORD | INFINITY)+ "—"
+        INFINITY: "∞"
 
         keywordlist: keywordsequence
         keywordsequence: keywordability | keywordsequence ("," | ";") keywordability
@@ -717,6 +718,7 @@ def getGrammar():
         | suspectexpression
         | forageexpression
         | manifestdreadexpression
+        | harnessexpression
 
         regenerateexpression: "regenerate" declarationorreference
         scryexpression: "scry" valueexpression
@@ -764,6 +766,7 @@ def getGrammar():
         suspectexpression: "suspect" reference
         forageexpression: "forage"
         manifestdreadexpression: "manifest dread"
+        harnessexpression: "harness" declarationorreference
 
 
         //TYPE/MANA/COLOR EXPRESSIONS, MODIFIERS, AND MISCELLANEOUS
