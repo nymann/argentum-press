@@ -729,6 +729,14 @@ class WebSlingingAbility(KeywordAbility):
 
 
 @dataclass(frozen=True, slots=True)
+class MayhemAbility(KeywordAbility):
+    """``Mayhem <cost>``."""
+
+    cost: Expression
+    reminder_text: ReminderText | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class WardAbility(KeywordAbility):
     """``Ward <cost>``.
 

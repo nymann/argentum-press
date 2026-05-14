@@ -129,6 +129,7 @@ from argentum_press.parser.ast import (
     MadnessAbility,
     ManaExpression,
     MayStatement,
+    MayhemAbility,
     MiracleAbility,
     ModalChoice,
     ModalExpression,
@@ -912,6 +913,9 @@ class CardTransformer(Transformer):
 
     def kwwebslinging(self, items):
         return WebSlingingAbility(cost=items[0])
+
+    def kwmayhem(self, items):
+        return MayhemAbility(cost=items[0])
 
     # -- Cost ---------------------------------------------------------------
 
