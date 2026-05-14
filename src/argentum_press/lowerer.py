@@ -856,7 +856,12 @@ class KotlinLowerer:
     @effect.register
     def _(self, e: ast.DealsDamageExpression) -> str:
         if e.damage_amount is None:
-            raise EmitterGap(e)
+            # "<X> deals <damage_type> to <Y>" used as a trigger predicate
+            # (e.g. "whenever a creature deals combat damage to a player").
+            # argentum-engine surfaces this as Triggers.DealsDamage on the
+            # triggered-ability side; emit a stub so the gap moves past
+            # DealsDamageExpression to whatever the next unhandled node is.
+            return "Effects.DealDamage()"
         amount = _number_int(e.damage_amount)
         if e.subject is None:
             raise EmitterGap(e)
