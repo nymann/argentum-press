@@ -45,6 +45,7 @@ from argentum_press.parser.ast import (
     AbilitySequenceStatement,
     AbsorbAbility,
     ActivationRestrictionStatement,
+    ActivationStatement,
     AddRemoveExpression,
     AffinityAbility,
     AfflictAbility,
@@ -1239,6 +1240,10 @@ class CardTransformer(Transformer):
 
     def thenstatement(self, items):
         return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
+
+    def activationstatement(self, items):
+        # `<cost> : <statementblock>` — body of an activated ability.
+        return ActivationStatement(cost=items[0], instructions=items[1])
 
     def activationrestrictionstatement(self, items):
         # `"activate" "only" "as" "a" "sorcery"` — grammar has a single form,
