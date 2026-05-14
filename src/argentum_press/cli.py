@@ -79,10 +79,50 @@ def main(argv: list[str] | None = None) -> int:
         "the default. Set 1 to disable parallelism (useful for debuggers).",
     )
 
+    diag = subparsers.add_parser(
+        "diagnose",
+        help="Find the first parse/lower gap in a set and emit it as JSON.",
+        description="Walk the set serially and stop at the first card the "
+        "parser/lowerer cannot handle yet. JSON to stdout is shaped for a "
+        "bash fix-loop (see argentum_press.diagnose).",
+    )
+    diag.add_argument("set", help="Scryfall set code, e.g. 'spm'.")
+    diag.add_argument(
+        "--project-dir",
+        required=False,
+        default=None,
+        type=Path,
+        help="Path to the argentum-engine checkout (used to skip already-"
+        "implemented cards during triage). Required unless --card is set.",
+    )
+    diag.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Look at most N cards (default: all). Diagnose short-circuits "
+        "on the first gap, so --limit is mainly useful for tests.",
+    )
+    diag.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force a re-fetch from Scryfall, bypassing the on-disk cache.",
+    )
+    diag.add_argument(
+        "--card",
+        default=None,
+        help="Diagnose only the named card (matched by name; falls back to "
+        "the front-face name for split/transform cards). Bypasses the "
+        "already-implemented and basic-land triage filters — i.e. always "
+        "reports the parse/lower outcome of this specific card. Useful for "
+        "the fix-loop: after editing, confirm the gap label moved.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "add-set":
         return _run_add_set(args)
+    if args.command == "diagnose":
+        return _run_diagnose(args)
 
     return 1
 
@@ -119,6 +159,44 @@ def _run_add_set(args: argparse.Namespace) -> int:
 
     _print_final_summary(report)
     return 1 if report.compile_stderr else 0
+
+
+def _run_diagnose(args: argparse.Namespace) -> int:
+    from . import existing
+    from .diagnose import DiagnoseReport, find_first_gap, gap_for_card
+
+    if args.card is None and args.project_dir is None:
+        print("--project-dir is required unless --card is set.", file=sys.stderr)
+        return 2
+
+    with ScryfallCatalog(force_refresh=args.refresh) as catalog:
+        cards = catalog.fetch(args.set)
+        if args.limit is not None:
+            cards = cards[: args.limit]
+
+        if args.card is not None:
+            match = next(
+                (
+                    c
+                    for c in cards
+                    if c["name"] == args.card
+                    or existing.front_face(c["name"]) == args.card
+                ),
+                None,
+            )
+            if match is None:
+                print(
+                    f"card {args.card!r} not found in set {args.set!r}.",
+                    file=sys.stderr,
+                )
+                return 2
+            gap = gap_for_card(match, KotlinLowerer())
+            report = DiagnoseReport(set_code=args.set, scanned=1, gap=gap)
+        else:
+            report = find_first_gap(cards, args.project_dir, args.set)
+
+    print(report.to_json())
+    return 0
 
 
 def _resolve_parser() -> Parser | None:
