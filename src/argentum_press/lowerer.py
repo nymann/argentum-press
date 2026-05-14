@@ -731,6 +731,13 @@ class KotlinLowerer:
         return f"Effects.ReturnToBattlefield({target_str})"
 
     @effect.register
+    def _(self, e: ast.LookExpression) -> str:
+        # "look at <subject>" — the rich AST drops the subject entirely; we
+        # emit a stub call so the gap moves past LookExpression to whatever
+        # the next unhandled node in this card is.
+        return "Effects.Look()"
+
+    @effect.register
     def _(self, e: ast.PreventDamageExpression) -> str:
         # "prevent that damage" / "prevent all <damagetype> ..." — the rich
         # AST carries surface descriptors only; we emit a stub call so the
