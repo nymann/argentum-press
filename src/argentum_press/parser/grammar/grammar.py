@@ -649,6 +649,7 @@ def getGrammar():
         | "as" "though" beingstatement -> castasthough
         | locationexpression -> castfromlocation
         | "by" "discarding" cardexpression "in" "addition" "to" "paying" possessiveterm? "other" "cost"["s"] -> castbyalternatecost
+        | "this" "way" -> castthisway
         chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
         controlsexpression: playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
         gaincontrolexpression: playerdeclref? ("gain"["s"] | "gained") "control" "of" declarationorreference
@@ -886,7 +887,7 @@ def getGrammar():
         PLAYERCHARACTERISTIC: "maximum hand size" | "life total"["s"] | "life" | "cards in hand"
         # OBJECTCHARACTERISTIC: "card"? "name" | "mana cost" | "converted mana cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         # | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
-        OBJECTCHARACTERISTIC: "card"? "name"["s"] | "mana value" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
+        OBJECTCHARACTERISTIC: "card"? "name"["s"] | "mana value" | "mana cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
 
         //[TODO: Not quite done, there are expressions like 'a number of cards equal to [...]'. There's some overlapping responsibilities with descriptions involving cards, maybe.]

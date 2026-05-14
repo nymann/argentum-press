@@ -1688,6 +1688,10 @@ class CardTransformer(Transformer):
         # castmodifiers, so return a marker.
         return Name(name="by-alternate-cost")
 
+    def castthisway(self, items):
+        # "this" "way" — castexpression drops castmodifiers, so return a marker.
+        return Name(name="this-way")
+
     def copyexpression(self, items):
         # playerdeclref? ("copy" | "copies" | "copied") declarationorreference
         # Surface-only stub mirroring castexpression: surface the
