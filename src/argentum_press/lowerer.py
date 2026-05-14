@@ -972,6 +972,14 @@ class KotlinLowerer:
             # 'whenever <expr>' surface. Emit a stub so the gap moves past
             # WheneverStatement to whatever's inside.
             return ["Effects.WheneverTrigger()"]
+        if isinstance(stmt, ast.RatherStatement):
+            # "<preferred> rather than <alternative>" — express a preference of
+            # one statement over another. argentum-engine has no DSL surface for
+            # preferred-vs-alternative actions (grep hits for 'Rather' are all
+            # incidental ruling text), and the AST fields are both Optional, so
+            # emit a stub call to move the gap past RatherStatement to whatever
+            # the preferred/alternative sub-statements surface next.
+            return ["Effects.RatherThan()"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
