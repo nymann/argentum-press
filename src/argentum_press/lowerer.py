@@ -764,6 +764,13 @@ class KotlinLowerer:
         return "Effects.AddCounters()"
 
     @effect.register
+    def _(self, e: ast.GainLoseExpression) -> str:
+        # "you gain N life" / "target player loses N life" — Reed left the
+        # body fields unmodeled (subject is the only carried field, often
+        # None). Emit a stub so the gap moves past GainLoseExpression.
+        return "Effects.GainLife()"
+
+    @effect.register
     def _(self, e: ast.ChoiceExpression) -> str:
         # "choose <X>" — the rich AST carries the operand as a surface
         # descriptor only; we emit a stub call so the gap moves past
