@@ -683,3 +683,11 @@ class CastPostfixExpression(EffectExpression):
     """``<player> cast`` — postfix reference to a player performing a cast action, used as a trigger condition or effect qualifier."""
 
     player: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PayManaExpression(EffectExpression):
+    """`<player> pays <mana>` — a player paying a mana cost, optionally with an explicit player reference."""
+
+    player: Expression | None = None
+    mana: Expression | None = None
