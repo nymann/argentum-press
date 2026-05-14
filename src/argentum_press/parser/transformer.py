@@ -75,6 +75,7 @@ from argentum_press.parser.ast import (
     CompoundStatement,
     CompoundTerminator,
     ControlExpression,
+    CopyExpression,
     CostIncreaseStatement,
     CostSequenceExpression,
     CreateTokenExpression,
@@ -1736,6 +1737,14 @@ class CardTransformer(Transformer):
         # timeexpression are dropped until a card needs them.
         subject = items[0] if items else Name(name="")
         return CastExpression(subject=subject)
+
+    def copyexpression(self, items):
+        # playerdeclref? ("copy" | "copies" | "copied") declarationorreference
+        # Surface-only stub mirroring castexpression: surface the
+        # declarationorreference as the subject; playerdeclref is dropped
+        # until a card needs it.
+        subject = items[-1] if items else Name(name="")
+        return CopyExpression(subject=subject)
 
     def drawexpression(self, items):
         # playerdeclref? ("draw"["s"]|"drew") cardexpression
