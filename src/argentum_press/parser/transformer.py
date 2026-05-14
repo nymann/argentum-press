@@ -121,6 +121,7 @@ from argentum_press.parser.ast import (
     HexproofAbility,
     HiddenAgendaAbility,
     IfStatement,
+    InAdditionToTypesExpression,
     IndefiniteSingularExpression,
     ItReference,
     JumpStartAbility,
@@ -1452,11 +1453,23 @@ class CardTransformer(Transformer):
     def isstatement(self, items):
         # `<subject> is/was/are [each] [still|not] <rhs>` -> BeingStatement.
         # The grammar tags this rule with `!`, so the is/was/are/each/still/not
-        # tokens come through as Tokens we drop here.
-        non_token = [it for it in items if not isinstance(it, Token)]
+        # tokens come through as Tokens we drop here. A trailing
+        # ``in addition to its other types`` clause arrives as a separate
+        # InAdditionToTypesExpression marker; BeingStatement doesn't yet model
+        # the additive-vs-replacing distinction, so we drop the marker.
+        non_token = [
+            it for it in items
+            if not isinstance(it, Token) and not isinstance(it, InAdditionToTypesExpression)
+        ]
         if len(non_token) == 1:
             return BeingStatement(rhs=non_token[0])
         return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
+
+    def inadditiontypesexpression(self, items):
+        # ``in addition to <possessive>? other type[s]`` — marker appended to an
+        # isstatement that grants types additively. The optional possessiveterm
+        # is always the subject's ("its"), so we don't need to retain it.
+        return InAdditionToTypesExpression()
 
     def becomesstatement(self, items):
         # `<subject>? become[s] <rhs>` -> BeingStatement.
