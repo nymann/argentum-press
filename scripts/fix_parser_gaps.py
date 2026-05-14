@@ -651,10 +651,22 @@ def _find_gap_with_ast(
     from argentum_press.lowerer import KotlinLowerer
 
     with ScryfallCatalog() as catalog:
+        stamp(f"{DIM}fetching {set_code} from Scryfall...{RESET}")
         cards = catalog.fetch(set_code)
-        report = find_first_gap(cards, project_dir, set_code)
+        cache = catalog.last_cache_state.source if catalog.last_cache_state else "?"
+        stamp(f"{DIM}fetched {len(cards)} cards (cache={cache}){RESET}")
+
+        last = [0]
+        def _progress(scanned: int, total: int) -> None:
+            if scanned - last[0] >= 25 or scanned == total:
+                stamp(f"{DIM}scanning... {scanned}/{total}{RESET}")
+                last[0] = scanned
+
+        stamp(f"{DIM}scanning for first gap (this is silent; speedups in plan){RESET}")
+        report = find_first_gap(cards, project_dir, set_code, progress=_progress)
         if report.gap is None:
             return None, None
+        stamp(f"{DIM}gap found after scanning {report.scanned} card(s){RESET}")
         # Refetch AST for the failing card so the orchestrator can include
         # it in the prompt for lower gaps.
         match = next((c for c in cards if c["name"] == report.gap.card_name), None)

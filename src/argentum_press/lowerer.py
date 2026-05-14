@@ -594,7 +594,7 @@ class KotlinLowerer:
 
     @ability.register
     def _(self, ability: ast.WebSlingingAbility) -> str:
-        raise EmitterGap(ability)
+        return "keywords(Keyword.WEB_SLINGING)"
 
     # ---- RegularAbility inner-shape detection -----------------------------
 

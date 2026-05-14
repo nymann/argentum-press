@@ -25,6 +25,7 @@ actually unblock.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,8 @@ def find_first_gap(
     cards: list[dict[str, Any]],
     project_dir: Path,
     set_code: str,
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> DiagnoseReport:
     """Walk ``cards`` in order, returning the first parse/lower failure.
 
@@ -208,20 +211,26 @@ def find_first_gap(
     ``scanned`` counts only cards actually fed through parse — i.e. it
     excludes the skipped ones — so the caller can tell whether a ``gap is
     None`` result means "set is clean" vs "set was empty after triage".
+
+    ``progress``, if given, is called as ``progress(scanned, candidate_count)``
+    after each card the walk actually parses. ``candidate_count`` is fixed for
+    the whole walk so callers can render a percentage; skipped cards are not
+    counted toward either number.
     """
     implemented = existing.implemented_cards_in_set(project_dir, set_code)
+    candidates = [
+        c for c in cards
+        if existing.front_face(c["name"]) not in implemented
+        and not is_basic_land(c)
+    ]
     lowerer = KotlinLowerer()
     scanned = 0
 
-    for card in cards:
-        front = existing.front_face(card["name"])
-        if front in implemented:
-            continue
-        if is_basic_land(card):
-            continue
-
+    for card in candidates:
         scanned += 1
         gap = gap_for_card(card, lowerer)
+        if progress is not None:
+            progress(scanned, len(candidates))
         if gap is not None:
             return DiagnoseReport(set_code=set_code, scanned=scanned, gap=gap)
 
