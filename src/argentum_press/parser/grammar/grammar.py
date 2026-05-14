@@ -55,6 +55,7 @@ def getGrammar():
         | becomesstatement
         | costchangestatement
         | wherestatement
+        | thereexistsstatement
 
         !isstatement: declarationorreference ("is" | "was" | "are" "each"?) ("still"|"not")? (declarationorreference | characteristicexpression | statement)
         !hasstatement: declarationorreference? ("has"|"have"|"had") (abilitysequencestatement | characteristicexpression | beexpression | statement)
@@ -68,6 +69,7 @@ def getGrammar():
         costchangestatement: declarationorreference "cost"["s"] manasymbolexpression "more" "to" ("cast" | "activate") -> costincreasestatement
         | declarationorreference "cost"["s"] manasymbolexpression "less" "to" "cast" -> costreductionstatement
         wherestatement: statement "," "where" statement //[Note: Used in elaborating variables.]
+        thereexistsstatement: "there" ("is" | "are") declarationorreference
 
         expressionstatement: (effectexpression | beexpression | valueexpression) timeexpression? //[TODO: Do time expressions need to go here?]
         beexpression: ("be"|"been") modifier valueexpression? ("by" declarationorreference)? timeexpression?//[TODO: Not sure how to categorize this one yet.]
