@@ -610,3 +610,12 @@ class PlayExpression(EffectExpression):
     subject: Expression
     player: Expression | None = None
     timing: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RemainsExpression(Expression):
+    """``<subject>? remain(s) <modifier|location>`` — persists a state or zone-position."""
+
+    subject: Expression | None = None
+    modifier: Expression | None = None
+    location: Expression | None = None

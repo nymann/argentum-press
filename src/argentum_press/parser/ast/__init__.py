@@ -122,7 +122,7 @@ from argentum_press.parser.ast.colormana import (
     ManaType,
 )
 from argentum_press.parser.ast.expressions import (
-    AddManaExpression, AddRemoveExpression, AllExpression, AndExpression, AndOrExpression, AnyColorSpecifier, BinaryOp, CardDrawExpression, CastExpression, ChangeZoneExpression, ChoiceExpression, ColorExpression, ConniveExpression, ControlExpression, CopyExpression, CostSequenceExpression, CreateTokenExpression, DashCostExpression, DealsDamageExpression, DealsDamageVariant, DeclarationExpression, DescriptionExpression, DestroyExpression, EachExpression, EffectExpression, ExileExpression, Expression, GainLoseExpression, GenericDeclarationExpression, InAdditionToTypesExpression, IndefiniteSingularExpression, LookExpression, ManaExpression, ManaSpecificationExpression, ManaSpecifier, MillExpression, ModalChoice, ModalExpression, NamedExpression, NonExpression, NumberOfExpression, NumberTypeEnum, NumberValue, OrExpression, PTExpression, PlayExpression, PossessiveExpression, PreventDamageExpression, PutInZoneExpression, RandomOrderPlacement, RedirectAllDamageExpression, ReturnExpression, RevealExpression, SacrificeExpression, SearchLibraryExpression, ShuffleLibraryExpression, SurveilExpression, TapUntapExpression, TargetExpression, TypeExpression, UnaryOp, UncastExpression, ValueComparisonExpression, ValueEqExpression, ValueExpression, ValueGtEqExpression, ValueGtExpression, ValueLtEqExpression, ValueLtExpression, WithExpression)
+    AddManaExpression, AddRemoveExpression, AllExpression, AndExpression, AndOrExpression, AnyColorSpecifier, BinaryOp, CardDrawExpression, CastExpression, ChangeZoneExpression, ChoiceExpression, ColorExpression, ConniveExpression, ControlExpression, CopyExpression, CostSequenceExpression, CreateTokenExpression, DashCostExpression, DealsDamageExpression, DealsDamageVariant, DeclarationExpression, DescriptionExpression, DestroyExpression, EachExpression, EffectExpression, ExileExpression, Expression, GainLoseExpression, GenericDeclarationExpression, InAdditionToTypesExpression, IndefiniteSingularExpression, LookExpression, ManaExpression, ManaSpecificationExpression, ManaSpecifier, MillExpression, ModalChoice, ModalExpression, NamedExpression, NonExpression, NumberOfExpression, NumberTypeEnum, NumberValue, OrExpression, PTExpression, PlayExpression, PossessiveExpression, PreventDamageExpression, PutInZoneExpression, RandomOrderPlacement, RedirectAllDamageExpression, RemainsExpression, ReturnExpression, RevealExpression, SacrificeExpression, SearchLibraryExpression, ShuffleLibraryExpression, SurveilExpression, TapUntapExpression, TargetExpression, TypeExpression, UnaryOp, UncastExpression, ValueComparisonExpression, ValueEqExpression, ValueExpression, ValueGtEqExpression, ValueGtExpression, ValueLtEqExpression, ValueLtExpression, WithExpression)
 from argentum_press.parser.ast.keywords import Keyword, TriggerCondition
 from argentum_press.parser.ast.references import (
     AbilityModifier,
@@ -374,6 +374,7 @@ __all__ = [
     "Reference",
     "RegularAbility",
     "ReinforceAbility",
+    "RemainsExpression",
     "ReminderText",
     "RenownAbility",
     "ReplicateAbility",
@@ -446,6 +447,7 @@ __all__ = [
     "WithExpression",
     "Zone",
     "ZoneEnum",
+    
     
     
 ]
