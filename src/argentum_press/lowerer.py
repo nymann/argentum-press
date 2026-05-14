@@ -218,6 +218,26 @@ def _find_target_subject(node: Any) -> ast.TargetExpression | None:
     return None
 
 
+def _equip_cost_string(cost: Any) -> str | None:
+    """Render an EquipAbility cost into the engine's ``"{2}"`` literal form."""
+    if isinstance(cost, ast.CostSequenceExpression):
+        parts: list[str] = []
+        for arg in cost.arguments:
+            sub = _equip_cost_string(arg)
+            if sub is None:
+                return None
+            parts.append(sub)
+        return ", ".join(parts)
+    if isinstance(cost, ast.ManaExpression):
+        out = ""
+        for sym in cost.symbols:
+            if not isinstance(sym, ast.Name):
+                return None
+            out += "{" + sym.name + "}"
+        return out
+    return None
+
+
 _ENCHANT_TARGET: dict[str, str] = {
     "creature": "Creature",
     "land": "Land",
@@ -346,7 +366,12 @@ class KotlinLowerer:
 
     @ability.register
     def _(self, ability: ast.EquipAbility) -> str:
-        raise EmitterGap(ability)
+        if ability.quality is not None:
+            raise EmitterGap(ability)
+        cost_str = _equip_cost_string(ability.cost)
+        if cost_str is None:
+            raise EmitterGap(ability)
+        return f'equipAbility("{cost_str}")'
 
     @ability.register
     def _(self, ability: ast.EnchantAbility) -> str:
