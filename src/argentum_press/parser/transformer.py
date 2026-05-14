@@ -145,6 +145,7 @@ from argentum_press.parser.ast import (
     NamedExpression,
     NinjutsuAbility,
     NonExpression,
+    NumberOfExpression,
     NumberTypeEnum,
     NumberValue,
     OfferingAbility,
@@ -983,6 +984,16 @@ class CardTransformer(Transformer):
         inner = items[0]
         inner_str = inner.value if isinstance(inner, NumberValue) else str(inner)
         return NumberValue(value=f"up to {inner_str}", ntype=NumberTypeEnum.CUSTOM)
+
+    def numberofexpression(self, items):
+        # `!numberofexpression: ("a"|"the"|"any") "number" "of" declarationorreference
+        #                     | ("a"|"the"|"any") "number" "of" countertype "counter"["s"]
+        #                       "on" declarationorreference`
+        # `!` keeps the literal tokens; the declarationorreference is the last
+        # non-Token item in either arm. Surface as NumberOfExpression so it
+        # slots into the valueexpression path.
+        non_token = [it for it in items if not isinstance(it, Token)]
+        return NumberOfExpression(expression=non_token[-1])
 
     def lteqexpression(self, items):
         # `lteqexpression: effectexpression? (valueexpression "or" ("less" | "fewer")
