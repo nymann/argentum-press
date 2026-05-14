@@ -838,6 +838,14 @@ class KotlinLowerer:
             # generate it (see the ActivatedAbility @ability handler, which
             # also gaps). Emit a stub so the gap moves past ActivationStatement.
             return ("Effects.Activate()",)
+        if isinstance(stmt, ast.MayStatement):
+            # "<player> may <statement>" — optional action gated on the
+            # player's yes/no decision (e.g. "you may mill a card"). The
+            # engine has a MayEffect data class but no top-level Effects.May
+            # DSL function exposed in mtg-sdk/dsl/Effects.kt yet; emit a stub
+            # so the gap moves past MayStatement to whatever the next
+            # unhandled node is.
+            return ("Effects.May()",)
         if isinstance(stmt, ast.BeingStatement):
             # "<X> is/has/can't <Y>" — grants an ability or state predicate
             # to the LHS (e.g. "enchanted land has '...'"). argentum-engine
