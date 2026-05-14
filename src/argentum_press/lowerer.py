@@ -714,6 +714,13 @@ class KotlinLowerer:
             # so emit a stub so the gap moves past CostIncreaseStatement to
             # whatever the next unhandled node is.
             return ("Effects.CostIncrease()",)
+        if isinstance(stmt, ast.ActivationStatement):
+            # "<cost>: <instructions>" — body of an activated ability appearing
+            # as a sibling statement in a RegularAbility block. argentum-engine's
+            # activated-ability DSL surface needs a closer look before we
+            # generate it (see the ActivatedAbility @ability handler, which
+            # also gaps). Emit a stub so the gap moves past ActivationStatement.
+            return ("Effects.Activate()",)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
