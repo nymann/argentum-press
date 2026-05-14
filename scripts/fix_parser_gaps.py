@@ -1673,12 +1673,20 @@ def main(argv: list[str] | None = None) -> int:
         prompt_variant=args.prompt_variant,
         say=lambda msg: stamp(f"{DIM}{msg}{RESET}"),
     )
+    playbook_pool = None
     if args.mode == "playbook":
         from argentum_press.playbook import (
+            driver as playbook_driver,
             lower as playbook_lower,
             parse_error as playbook_parse_error,
             unmodeled_rule as playbook_unmodeled_rule,
         )
+        # One long-lived `claude --input-format stream-json` process per model,
+        # shared across every gap in this run. forget() between iterations wipes
+        # conversation state. This is what gets us off the SDK's OAuth-bearer
+        # rate-limit envelope (the 5-minute-backoff-can't-bridge-quota path)
+        # and onto the same edge transport freeform uses.
+        playbook_pool = playbook_driver.DriverPool(working_dir=REPO)
         # Composition: parse-error -> unmodeled-rule -> lower -> freeform.
         # Every gap kind routes to its dedicated playbook; freeform is the
         # last-resort fallback when a gap doesn't match any kind (shouldn't
@@ -1687,16 +1695,19 @@ def main(argv: list[str] | None = None) -> int:
         lower_fixer = LowerPlaybookFixer(
             run_lower=playbook_lower.run,
             fallback=freeform,
+            pool=playbook_pool,
             say=say,
         )
         unmodeled_fixer = UnmodeledRulePlaybookFixer(
             run_unmodeled_rule=playbook_unmodeled_rule.run,
             fallback=lower_fixer,
+            pool=playbook_pool,
             say=say,
         )
         strategy: GapFixer = ParseErrorPlaybookFixer(
             run_parse_error=playbook_parse_error.run,
             fallback=unmodeled_fixer,
+            pool=playbook_pool,
             say=say,
         )
     else:
@@ -1822,6 +1833,13 @@ def main(argv: list[str] | None = None) -> int:
             recorder.finish_iteration(rec)
 
         prev_label = gap.label
+
+        # Wipe playbook conversation state between iterations so each gap
+        # starts fresh. The subprocess stays alive — only the in-flight
+        # context is reset. Cheap, and prevents one gap's prompt history
+        # from biasing the next gap's structured JSON output.
+        if playbook_pool is not None:
+            playbook_pool.forget_all()
 
 
 if __name__ == "__main__":

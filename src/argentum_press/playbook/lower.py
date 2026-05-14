@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PlaybookResult, StepLog, cache, context, edits, heuristics, llm, log_step
+from . import PlaybookResult, StepLog, cache, context, driver as _driver_mod, edits, heuristics, llm, log_step
 
 
 # Pytest invocation reused across the success path and the retry. We mirror
@@ -78,12 +78,50 @@ def _short(text: str, n: int) -> str:
     return text[: n - 3] + "..."
 
 
+def _call(
+    *,
+    tool_name: str,
+    system_prompt: str,
+    static_context_blocks: list,
+    user_prompt: str,
+    model: str,
+    max_tokens: int,
+    pool: _driver_mod.DriverPool | None,
+    client: llm.ClientLike | None,
+) -> llm.ToolCallResult:
+    """Route to CLI driver or SDK based on which transport was provided.
+
+    Tests pass ``client=`` (FakeClient with SDK shape) and exercise the
+    SDK path. Production passes ``pool=`` and exercises the long-lived
+    ``claude`` subprocess. Exactly one must be set.
+    """
+    if pool is not None:
+        return llm.call_tool_via_cli(
+            tool_name=tool_name,
+            system_prompt=system_prompt,
+            static_context_blocks=static_context_blocks,
+            user_prompt=user_prompt,
+            pool=pool,
+            model=model,
+        )
+    return llm.call_tool(
+        tool_name=tool_name,
+        system_prompt=system_prompt,
+        static_context_blocks=static_context_blocks,
+        user_prompt=user_prompt,
+        model=model,
+        client=client,
+        max_tokens=max_tokens,
+    )
+
+
 def run(
     *,
     label: str,
     project_dir: Path,
     repo: Path | None = None,
     client: llm.ClientLike | None = None,
+    pool: _driver_mod.DriverPool | None = None,
     pytest_runner: Callable[[Path], tuple[int, str]] | None = None,
     cache_root: Path | None = None,
     card_name: str = "",
@@ -161,14 +199,15 @@ def run(
             f"similar."
         )
         try:
-            call = llm.call_tool(
+            call = _call(
                 tool_name="emit_ast_summary",
                 system_prompt=llm.SYSTEM_PROMPT,
                 static_context_blocks=blocks,
                 user_prompt=user_prompt,
                 model=l3_model,
-                client=client,
                 max_tokens=512,
+                pool=pool,
+                client=client,
             )
             summary = call.arguments
             cache.put(ctx.ast_class.source, summary, root=cache_root)
@@ -201,14 +240,15 @@ def run(
         f"will surface its own next gap."
     )
     try:
-        strat_call = llm.call_tool(
+        strat_call = _call(
             tool_name="emit_strategy",
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=strategy_blocks,
             user_prompt=strategy_user,
             model=l4_model,
-            client=client,
             max_tokens=512,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-l4"
@@ -251,14 +291,15 @@ def run(
 
     t0 = time.monotonic()
     try:
-        plan_call = llm.call_tool(
+        plan_call = _call(
             tool_name="emit_plan",
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=plan_blocks,
             user_prompt=plan_user,
             model=l5_model,
-            client=client,
             max_tokens=2048,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-l5"
@@ -315,14 +356,15 @@ def run(
         "the pattern itself was wrong."
     )
     try:
-        retry_call = llm.call_tool(
+        retry_call = _call(
             tool_name="emit_plan",
             system_prompt=llm.SYSTEM_PROMPT,
             static_context_blocks=retry_blocks,
             user_prompt=retry_user,
             model=l9_model,
-            client=client,
             max_tokens=2048,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         edits.revert(edit)

@@ -206,10 +206,12 @@ class LowerPlaybookFixer(GapFixer):
         *,
         run_lower: Callable[..., Any],
         fallback: GapFixer,
+        pool: Any = None,
         say: Callable[[str], None] | None = None,
     ) -> None:
         self._run_lower = run_lower
         self._fallback = fallback
+        self._pool = pool
         self._say = say or (lambda _msg: None)
 
     def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
@@ -231,6 +233,7 @@ class LowerPlaybookFixer(GapFixer):
             oracle_text=gap.oracle_text,
             ast_text=ctx.ast_text,
             verbose=True,
+            pool=self._pool,
         )
         return _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say
@@ -250,10 +253,12 @@ class ParseErrorPlaybookFixer(GapFixer):
         *,
         run_parse_error: Callable[..., Any],
         fallback: GapFixer,
+        pool: Any = None,
         say: Callable[[str], None] | None = None,
     ) -> None:
         self._run_parse_error = run_parse_error
         self._fallback = fallback
+        self._pool = pool
         self._say = say or (lambda _msg: None)
 
     def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
@@ -274,6 +279,7 @@ class ParseErrorPlaybookFixer(GapFixer):
             oracle_text=gap.oracle_text,
             pe_block=ctx.pe_block,
             verbose=True,
+            pool=self._pool,
         )
         return _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say
@@ -288,10 +294,12 @@ class UnmodeledRulePlaybookFixer(GapFixer):
         *,
         run_unmodeled_rule: Callable[..., Any],
         fallback: GapFixer,
+        pool: Any = None,
         say: Callable[[str], None] | None = None,
     ) -> None:
         self._run_unmodeled_rule = run_unmodeled_rule
         self._fallback = fallback
+        self._pool = pool
         self._say = say or (lambda _msg: None)
 
     def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
@@ -311,6 +319,7 @@ class UnmodeledRulePlaybookFixer(GapFixer):
             card_name=gap.card_name,
             oracle_text=gap.oracle_text,
             verbose=True,
+            pool=self._pool,
         )
         return _wrap_playbook_outcome(
             result, time.monotonic() - t_start, ctx, gap.label, self._say

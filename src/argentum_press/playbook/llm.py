@@ -19,11 +19,14 @@ constructed via :class:`anthropic.Anthropic` when ``client=None``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import jsonschema
+
+from . import driver as _driver_mod
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +424,102 @@ def call_tool(
         ) from e
 
     return ToolCallResult(tool_name=tool_name, arguments=args, raw_response=response)
+
+
+# ---------------------------------------------------------------------------
+# CLI-backed variant: routes through ``claude -p`` instead of the SDK.
+# ---------------------------------------------------------------------------
+
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Pull a JSON object out of ``claude``'s free-text response.
+
+    Preference order: (1) the last ```json fenced block, (2) the whole
+    response parsed as JSON, (3) the largest balanced ``{...}`` substring.
+    Raises :class:`ValueError` if nothing parses.
+    """
+    matches = _FENCE_RE.findall(text)
+    candidates: list[str] = []
+    if matches:
+        candidates.append(matches[-1].strip())
+    candidates.append(text.strip())
+    # Last-resort balanced-braces extraction; greedy from first `{`.
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last > first:
+        candidates.append(text[first : last + 1])
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    raise ValueError(
+        f"playbook: could not extract JSON object from claude response; "
+        f"tail={text[-400:]!r}"
+    )
+
+
+def call_tool_via_cli(
+    *,
+    tool_name: str,
+    system_prompt: str,
+    static_context_blocks: list[dict[str, Any]],
+    user_prompt: str,
+    pool: _driver_mod.DriverPool,
+    model: str,
+) -> ToolCallResult:
+    """CLI-backed equivalent of :func:`call_tool`.
+
+    Concatenates the system prompt + static context blocks + user prompt
+    into one user turn, adds a schema-emission instruction, sends it to
+    the per-model long-lived ``claude`` subprocess via :class:`DriverPool`,
+    parses JSON from the response, and validates against the tool's
+    schema. Returns the same :class:`ToolCallResult` shape so callers
+    don't branch on transport.
+
+    Loses two things relative to the SDK path:
+
+    * Forced ``tool_use`` JSON — replaced by prompt instruction +
+      :func:`_extract_json_object`. Schema validation still runs.
+    * Per-block ``cache_control`` markers — ``claude -p`` does its own
+      prompt caching at the edge, but we can't pin specific blocks.
+    """
+    schema = TOOL_SCHEMAS[tool_name]
+    static_text_parts: list[str] = []
+    for block in static_context_blocks:
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str) and text:
+            static_text_parts.append(text)
+
+    schema_str = json.dumps(schema, indent=2)
+    prompt = (
+        f"{system_prompt}\n\n"
+        + "\n\n---\n\n".join(static_text_parts)
+        + ("\n\n---\n\n" if static_text_parts else "")
+        + f"{user_prompt}\n\n"
+        f"Respond with EXACTLY one JSON object matching this schema, "
+        f"wrapped in a single ```json fenced code block. Do not include "
+        f"any prose outside the fence. Do not call any tools.\n\n"
+        f"SCHEMA (tool_name={tool_name}):\n\n{schema_str}\n"
+    )
+
+    driver = pool.get(model)
+    attempt = driver.attempt(prompt)
+    args = _extract_json_object(attempt.assistant_text)
+
+    try:
+        jsonschema.validate(args, schema)
+    except jsonschema.ValidationError as e:
+        raise ValueError(
+            f"playbook: cli {tool_name} args failed schema: {e.message}; got {args!r}"
+        ) from e
+
+    return ToolCallResult(tool_name=tool_name, arguments=args, raw_response=attempt)
 
 
 # ---------------------------------------------------------------------------

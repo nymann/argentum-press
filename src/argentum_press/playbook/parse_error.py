@@ -24,8 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PlaybookResult, context, edits, llm, log_step
-from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _short, run_pytest
+from . import PlaybookResult, context, driver as _driver_mod, edits, llm, log_step
+from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _call, _short, run_pytest
 
 
 P3_MODEL = L4_MODEL
@@ -45,6 +45,7 @@ def run(
     project_dir: Path,
     repo: Path | None = None,
     client: llm.ClientLike | None = None,
+    pool: _driver_mod.DriverPool | None = None,
     pytest_runner: Callable[[Path], tuple[int, str]] | None = None,
     card_name: str = "",
     oracle_text: str = "",
@@ -112,14 +113,15 @@ def run(
         "one-sentence rationale."
     )
     try:
-        choice_call = llm.call_tool(
+        choice_call = _call(
             tool_name="emit_parse_parent_choice",
             system_prompt=llm.PARSE_ERROR_SYSTEM_PROMPT,
             static_context_blocks=choice_blocks,
             user_prompt=choice_user,
             model=p3_model,
-            client=client,
             max_tokens=512,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-p3"
@@ -163,14 +165,15 @@ def run(
         f"alternative naming convention doesn't use one."
     )
     try:
-        alt_call = llm.call_tool(
+        alt_call = _call(
             tool_name="emit_parse_alternative",
             system_prompt=llm.PARSE_ERROR_SYSTEM_PROMPT,
             static_context_blocks=alt_blocks,
             user_prompt=alt_user,
             model=p4_model,
-            client=client,
             max_tokens=512,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-p4"
@@ -237,14 +240,15 @@ def run(
         "(but keep the rule name from the original P3 candidate set)."
     )
     try:
-        retry_call = llm.call_tool(
+        retry_call = _call(
             tool_name="emit_parse_alternative",
             system_prompt=llm.PARSE_ERROR_SYSTEM_PROMPT,
             static_context_blocks=retry_blocks,
             user_prompt=retry_user,
             model=p8_model,
-            client=client,
             max_tokens=512,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         edits.revert_grammar(edit)

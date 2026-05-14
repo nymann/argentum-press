@@ -26,8 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PlaybookResult, context, edits, heuristics, llm, log_step
-from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _short, run_pytest
+from . import PlaybookResult, context, driver as _driver_mod, edits, heuristics, llm, log_step
+from .lower import L4_MODEL, L5_MODEL, L9_MODEL, _call, _short, run_pytest
 
 
 U3_MODEL = L4_MODEL
@@ -111,6 +111,7 @@ def run(
     project_dir: Path,
     repo: Path | None = None,
     client: llm.ClientLike | None = None,
+    pool: _driver_mod.DriverPool | None = None,
     pytest_runner: Callable[[Path], tuple[int, str]] | None = None,
     card_name: str = "",
     oracle_text: str = "",
@@ -200,7 +201,7 @@ def run(
         exemplar_diffs=exemplar_text,
     )
     try:
-        design_call = llm.call_tool(
+        design_call = _call(
             tool_name="emit_ast_class_design",
             system_prompt=llm.UNMODELED_RULE_SYSTEM_PROMPT,
             static_context_blocks=design_blocks,
@@ -208,8 +209,9 @@ def run(
                 ctx.rule_name, module_choice.module, module_choice.confidence
             ),
             model=u3_model,
-            client=client,
             max_tokens=1024,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-u3"
@@ -233,14 +235,15 @@ def run(
         exemplar_diffs=exemplar_text,
     )
     try:
-        method_call = llm.call_tool(
+        method_call = _call(
             tool_name="emit_transformer_method",
             system_prompt=llm.UNMODELED_RULE_SYSTEM_PROMPT,
             static_context_blocks=method_blocks,
             user_prompt=_u4_user_prompt(ctx.rule_name),
             model=u4_model,
-            client=client,
             max_tokens=2048,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         result.outcome = "aborted-u4"
@@ -309,14 +312,15 @@ def run(
         "for the retry pass."
     )
     try:
-        retry_call = llm.call_tool(
+        retry_call = _call(
             tool_name="emit_transformer_method",
             system_prompt=llm.UNMODELED_RULE_SYSTEM_PROMPT,
             static_context_blocks=retry_blocks,
             user_prompt=retry_user,
             model=u8_model,
-            client=client,
             max_tokens=2048,
+            pool=pool,
+            client=client,
         )
     except Exception as e:  # noqa: BLE001
         edits.revert_unmodeled_rule(edit)
