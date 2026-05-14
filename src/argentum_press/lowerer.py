@@ -857,6 +857,11 @@ class KotlinLowerer:
         return f"Effects.DrawCards({amount})"
 
     @effect.register
+    def _(self, e: ast.SurveilExpression) -> str:
+        amount = _number_int(e.caliber)
+        return f"EffectPatterns.surveil({amount})"
+
+    @effect.register
     def _(self, e: ast.ReturnExpression) -> str:
         target_str = self._target_from_expression(e.subject)
         return f"Effects.ReturnToBattlefield({target_str})"
