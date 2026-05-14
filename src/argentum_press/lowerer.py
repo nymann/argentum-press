@@ -999,6 +999,15 @@ class KotlinLowerer:
             # both AST fields are Optional Statement, so emit a stub to move the
             # gap past WhereStatement to whatever the inner statements surface.
             return ["Effects.Where()"]
+        if isinstance(stmt, ast.UnlessStatement):
+            # "<body> unless <condition>" — body applies except when condition
+            # holds (e.g. "you lose 2 life unless you control a Villain").
+            # argentum-engine's Unless surface is narrow (CounterUnlessPays /
+            # UnlessPaysMana / UnlessPaysDynamic, all spell-counter specific);
+            # there's no generic body-unless-condition Effect surface. Both AST
+            # fields are Optional Statement, so emit a stub to move the gap
+            # past UnlessStatement to whatever the body/condition surface next.
+            return ["Effects.Unless()"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
