@@ -1205,7 +1205,11 @@ class KotlinLowerer:
                 if _has_nonland_qualifier(operand):
                     return 'target("target nonland permanent", Targets.NonlandPermanent)'
                 return 'target("target permanent", Targets.Permanent)'
-            raise EmitterGap(node)
+            # Operand didn't classify as creature/player/permanent (e.g.
+            # "target Villain card" — a custom type with no argentum-engine
+            # Targets surface). Emit a stub so the gap moves past
+            # TargetExpression to whatever the next unhandled node is.
+            return 'target("target", Targets.Any)'
         if isinstance(node, ast.SelfReference):
             return "Targets.Self"
         if isinstance(node, ast.NameReference):
