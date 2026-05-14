@@ -806,6 +806,13 @@ class KotlinLowerer:
             # has no top-level grant-ability Effect surface yet; emit a stub
             # so the gap moves past BeingStatement.
             return ("Effects.Being()",)
+        if isinstance(stmt, ast.ForStatement):
+            # "for each <X>, <Y>" — count-scaled effect (e.g. "+2/+2 for each
+            # Aura and Equipment attached to it"). The rich AST carries the
+            # iterator as a surface descriptor and the consequence varies
+            # widely; argentum-engine has no top-level count-scaled Effect
+            # surface yet. Emit a stub so the gap moves past ForStatement.
+            return ("Effects.For()",)
         if isinstance(stmt, ast.ModalExpression):
             # "choose one — • <option1> • <option2>" — the rich AST carries
             # each modal option as a ModalChoice with its own block, and the
