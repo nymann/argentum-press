@@ -1533,6 +1533,14 @@ class CardTransformer(Transformer):
         subject = items[-1] if items else None
         return AddRemoveExpression(subject=subject)
 
+    def movecounterexpression(self, items):
+        # `playerdeclref? "move"["s"] ("a"|valueexpression) countertype "counter"["s"]
+        #  "from" declarationorreference ("onto"|"to") declarationorreference`
+        # Day-one stub mirroring putcounterexpression: collapse to
+        # AddRemoveExpression carrying the destination.
+        subject = items[-1] if items else None
+        return AddRemoveExpression(subject=subject)
+
     def preventdamagevariante(self, items):
         # "prevent that <DAMAGETYPE>" / "prevent all <DAMAGETYPE> that? <ref>? would deal ..."
         # Surface-only stub: carry the matched children so future lowering can read them.
