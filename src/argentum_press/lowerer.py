@@ -1145,3 +1145,8 @@ class KotlinLowerer:
             # DescriptionExpression to whatever the next unhandled node is.
             return "Targets.Self"
         raise EmitterGap(node)
+    @effect.register  # ast=ast.PutInZoneExpression
+    def _(self, expr: ast.PutInZoneExpression) -> str:
+        # argentum-engine has no PutInZone DSL surface yet; emit a stub so
+        # the lowerer moves past this AST class to the next gap.
+        return "Effects.PutInZone()"
