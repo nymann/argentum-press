@@ -50,7 +50,11 @@ def _indent(text: str, prefix: str) -> str:
 
 
 def _format_parse_error_block(
-    details: Any, *, oracle_text: str = "", card_name: str = "",
+    details: Any,
+    *,
+    oracle_text: str = "",
+    card_name: str = "",
+    overall_label: str | None = None,
 ) -> str | None:
     """Format a :class:`ParseErrorDetails` into the prompt-ready string the
     orchestrator used to compute inline. Returns None when ``details`` is
@@ -78,16 +82,27 @@ def _format_parse_error_block(
         f"{_indent(details.raw_message, '    ')}"
     )
     if oracle_text.strip():
-        # Visible progress: Earley parses are 1-30s each, so even the
-        # bounded per-sentence walk can take a minute on a long card.
-        # The orchestrator above us is silent during the subprocess, so
-        # stamp the start/end here.
+        # Visible progress: Earley parses are 1-30s each. With overall_
+        # label passed (we already know the parse failed and what the
+        # label is) we skip the redundant full re-parse — saves one
+        # parse per card. ProcessPool workers run sentences in parallel,
+        # capped at 4 to avoid grammar-compile thrash on small cards.
+        import os
         import time as _time
-        _log(f"computing failure-region for {card_name!r}...")
+        max_workers = min(4, os.cpu_count() or 1)
+        _log(
+            f"computing failure-region for {card_name!r} "
+            f"(max_workers={max_workers})..."
+        )
         t0 = _time.monotonic()
         try:
             from argentum_press.parser.failure_region import find_parse_failure_region
-            fr = find_parse_failure_region(oracle_text, name=card_name)
+            fr = find_parse_failure_region(
+                oracle_text,
+                name=card_name,
+                overall_label=overall_label,
+                max_workers=max_workers,
+            )
         except Exception as exc:  # noqa: BLE001
             # Diagnostic-only: never let this block the orchestrator.
             _log(f"failure-region: analysis failed: {exc!r}")
@@ -205,6 +220,7 @@ def main(argv: list[str]) -> int:
         report.gap.parse_details,
         oracle_text=report.gap.oracle_text,
         card_name=report.gap.card_name,
+        overall_label=report.gap.label,
     )
 
     _emit({
