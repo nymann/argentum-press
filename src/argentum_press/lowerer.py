@@ -133,6 +133,15 @@ def _find_trigger_marker(node: Any) -> str:
         # the engine's generic Dies trigger so the gap moves past
         # DiesExpression.
         return "dies"
+    if isinstance(node, ast.DiesExpression):
+        # "<subject>? die(s) <timing>?" as a trigger condition (e.g.
+        # "whenever this creature dies" / "when a creature you control
+        # dies"). The rich AST carries subject / timing as surface fields;
+        # map to the engine's Dies trigger family (Triggers.Dies for SELF,
+        # Triggers.AnyCreatureDies / Triggers.YourCreatureDies for
+        # unscoped or you-control subjects) so the gap moves past
+        # DiesExpression.
+        return "dies"
 
 
 def _trigger_kotlin_name(condition: Any) -> str:
