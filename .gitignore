@@ -16,6 +16,7 @@ experiments/playbook-cache/
 # Per-run traces (kept locally for postmortem; commit selectively if useful)
 experiments/playbook-traces/
 experiments/runs/
+experiments/profiles/
 
 # Stray logs
 *.log
