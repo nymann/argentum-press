@@ -34,8 +34,10 @@ def getGrammar():
         | additionalcoststatement
         | modalstatement
         | activationrestrictionstatement
+        | triggerrestrictionstatement
 
         activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
+        triggerrestrictionstatement: declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?
 
         thenstatement: "then" statement
         insteadstatement: statement "instead"
