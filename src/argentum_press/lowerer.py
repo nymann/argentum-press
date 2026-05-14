@@ -68,6 +68,7 @@ _TRIGGER_KOTLIN: dict[str, str] = {
     "attacks": "Attacks",
     "dies": "Dies",
     "enters": "EntersBattlefield",
+    "leaves": "LeavesBattlefield",
     "upkeep": "BeginningOfUpkeep",
     "end of turn": "EndOfTurn",
 }
