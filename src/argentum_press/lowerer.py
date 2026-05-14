@@ -177,6 +177,8 @@ def _classify_type_operand(node: Any) -> str:
             return "creature"
         if text in {"player", "players", "opponent", "opponents"}:
             return "player"
+        if text in {"permanent", "permanents"}:
+            return "permanent"
         return "unknown"
     if isinstance(node, ast.GenericDeclarationExpression):
         return _classify_type_operand(node.definition)
@@ -193,6 +195,21 @@ def _classify_type_operand(node: Any) -> str:
                 return kind
         return "unknown"
     return "unknown"
+
+
+def _has_nonland_qualifier(node: Any) -> bool:
+    """Detect a ``non-land`` qualifier anywhere in a target operand subtree."""
+    if isinstance(node, ast.NonExpression):
+        inner = node.operand
+        if isinstance(inner, ast.Name) and inner.name.strip().lower() == "land":
+            return True
+    if isinstance(node, ast.DescriptionExpression):
+        return any(_has_nonland_qualifier(d) for d in node.descriptors)
+    if isinstance(node, ast.TypeExpression):
+        return any(_has_nonland_qualifier(t) for t in node.types)
+    if isinstance(node, ast.GenericDeclarationExpression):
+        return _has_nonland_qualifier(node.definition)
+    return False
 
 
 def _find_pt_expression(node: Any) -> ast.PTExpression | None:
@@ -1058,6 +1075,10 @@ class KotlinLowerer:
                 return 'target("target creature", Targets.Creature)'
             if type_kind == "player":
                 return 'target("target player", Targets.Player)'
+            if type_kind == "permanent":
+                if _has_nonland_qualifier(operand):
+                    return 'target("target nonland permanent", Targets.NonlandPermanent)'
+                return 'target("target permanent", Targets.Permanent)'
             raise EmitterGap(node)
         if isinstance(node, ast.SelfReference):
             return "Targets.Self"
