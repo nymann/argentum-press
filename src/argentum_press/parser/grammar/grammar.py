@@ -431,7 +431,7 @@ def getGrammar():
         playerreference: referencedecorator+ playerdefinition ["each"]
         playerdefinition: playerdescriptionexpression
         playerdescriptionexpression : playerdescriptionterm (","? playerdescriptionterm)*
-        playerdescriptionterm: valueordinal | modifier | playerterm | withexpression | withoutexpression | whoexpression
+        playerdescriptionterm: valueordinal | modifier | playerterm | withexpression | withoutexpression | whoexpression | otherthanexpression
         playerterm: PLAYERTERM
         whoexpression: "who" statement
 
