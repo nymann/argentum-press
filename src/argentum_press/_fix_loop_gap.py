@@ -70,21 +70,28 @@ def _format_parse_error_block(details: Any) -> str | None:
     )
 
 
-def _read_skip_cards() -> set[str]:
-    """Read optional ``{"skip_cards": [...]}`` JSON from stdin.
+def _read_filters() -> tuple[set[str], set[str] | None]:
+    """Read optional ``{"skip_cards": [...], "only_cards": [...]}`` JSON from stdin.
 
-    The orchestrator's capture-batch path pipes a skip set in so each
-    iteration surfaces a different card. When stdin is a TTY (interactive
-    debug invocation) or empty (the regular fix-loop path) we return an
-    empty set. Malformed JSON is fatal — capture-batch would silently keep
-    re-capturing the same gap otherwise."""
+    Returns ``(skip_cards, only_cards)``. ``only_cards`` is ``None`` (not an
+    empty set) when the key is absent, so an empty list and an absent key
+    mean different things downstream.
+
+    The orchestrator pipes filters in for two paths: capture-batch (growing
+    skip set) and --card A/B testing (only set). When stdin is a TTY or
+    empty we return defaults. Malformed JSON is fatal — both callers would
+    silently misbehave otherwise.
+    """
     if sys.stdin.isatty():
-        return set()
+        return set(), None
     data = sys.stdin.read()
     if not data.strip():
-        return set()
+        return set(), None
     parsed = json.loads(data)
-    return set(parsed.get("skip_cards", []))
+    skip = set(parsed.get("skip_cards", []))
+    only_raw = parsed.get("only_cards")
+    only: set[str] | None = set(only_raw) if only_raw is not None else None
+    return skip, only
 
 
 def main(argv: list[str]) -> int:
@@ -97,7 +104,7 @@ def main(argv: list[str]) -> int:
     set_code, project_dir_s = argv
     project_dir = Path(project_dir_s)
 
-    skip_cards = _read_skip_cards()
+    skip_cards, only_cards = _read_filters()
 
     from .catalog import ScryfallCatalog
     from .diagnose import find_first_gap, format_ast, inspect_card
@@ -126,14 +133,18 @@ def main(argv: list[str]) -> int:
             color = "red" if gap is not None else "green"
             _log(f"[{scanned:>3}/{total}] {mark} {card['name']}", color=color)
 
+        bits = []
+        if only_cards is not None:
+            bits.append(f"only {sorted(only_cards)}")
         if skip_cards:
-            _log(f"scanning for first gap... (skipping {len(skip_cards)} captured)")
-        else:
-            _log("scanning for first gap...")
+            bits.append(f"skipping {len(skip_cards)} captured")
+        suffix = f" ({'; '.join(bits)})" if bits else ""
+        _log(f"scanning for first gap...{suffix}")
         report = find_first_gap(
             cards, project_dir, set_code,
             progress=_before, on_complete=_after,
             skip_names=skip_cards,
+            only_names=only_cards,
         )
 
         if report.gap is None:
