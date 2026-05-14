@@ -942,6 +942,11 @@ class KotlinLowerer:
             # when/if construct.
             inner = self._effects_from_statement(stmt.consequence)
             return [f"Effects.conditional({inner!r}, inverted={stmt.inverted})"]
+        if isinstance(stmt, ast.ManaSpendableStatement):
+            # "mana of any type can be spent to cast spells this way" is a
+            # marker clause with no fields; argentum-engine has no surface
+            # for it yet. Emit a stub so the gap moves past this AST class.
+            return ["Effects.ManaSpendableAnyType()"]
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
