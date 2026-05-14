@@ -950,6 +950,14 @@ class KotlinLowerer:
         return "Effects.Description()"
 
     @effect.register
+    def _(self, e: ast.CastExpression) -> str:
+        # "cast <subject>" — surface stub; the rich AST carries only a
+        # descriptor subject (e.g. "you cast a creature spell"), and
+        # argentum-engine has no top-level effect surface for a bare cast
+        # predicate. Emit a stub so the gap moves past CastExpression.
+        return "Effects.Cast()"
+
+    @effect.register
     def _(self, e: ast.ControlExpression) -> str:
         # "<controller> control(s)" — a decoration carrying only the
         # controller as a surface descriptor (e.g. "you control" appearing
