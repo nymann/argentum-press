@@ -643,3 +643,13 @@ class WhoExpression(Expression):
     """``who <statement>`` — relative clause introducing a subject described by a statement."""
 
     statement: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LoseLifeExpression(EffectExpression):
+    """``<player>? lose(s|t) <amount>? life <timing>?`` — a player loses life (present or past tense)."""
+
+    player: Expression | None = None
+    amount: ValueExpression | None = None
+    timing: Expression | None = None
+    past_tense: bool = False

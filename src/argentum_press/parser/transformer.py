@@ -42,7 +42,7 @@ from lark import Token, Transformer, Tree
 from lark.exceptions import LarkError, UnexpectedInput
 
 from argentum_press.parser.ast import (
-    AbilitySequenceStatement, AbilityWord, AbsorbAbility, ActivationRestrictionStatement, ActivationStatement, AddManaExpression, AddRemoveExpression, AffinityAbility, AfflictAbility, AmplifyAbility, AndExpression, AndOrExpression, AnnihilatorAbility, AnyColorSpecifier, AsLongAsStatement, AsStatement, AtStatement, AuraSwapAbility, AwakenAbility, BandingAbility, BeingStatement, BestowAbility, BloodthirstAbility, BushidoAbility, BuybackAbility, Card, CardDrawExpression, CastExpression, ChampionAbility, ChangeZoneExpression, ChoiceExpression, ColorExpression, CompoundStatement, CompoundTerminator, ConniveExpression, ControlExpression, CopyExpression, CostIncreaseStatement, CostSequenceExpression, CreateTokenExpression, CrewAbility, CumulativeUpkeepAbility, CyclingAbility, DamageType, DamageTypeEnum, DashAbility, DashCostExpression, DealsDamageExpression, DealsDamageVariant, DescriptionExpression, DestroyExpression, DevourAbility, DiesExpression, DiscardExpression, DontStatement, DredgeAbility, EachExpression, EchoAbility, EmbalmAbility, EmergeAbility, EnchantAbility, EntwineAbility, EquipAbility, EscalateAbility, EternalizeAbility, EvokeAbility, ExceptStatement, ExileExpression, Expression, ExpressionStatement, FabricateAbility, FadingAbility, FlashbackAbility, ForStatement, FortifyAbility, FrenzyAbility, GainLoseExpression, GenericDeclarationExpression, GraftAbility, HexproofAbility, HiddenAgendaAbility, IfStatement, InAdditionToTypesExpression, IndefiniteSingularExpression, ItReference, JumpStartAbility, Keyword, KeywordAbility, KeywordAbilityListStatement, KickerAbility, LandwalkAbility, LevelUpAbility, LookExpression, MadnessAbility, ManaExpression, ManaSpendableStatement, MayStatement, MayhemAbility, MillExpression, MiracleAbility, ModalChoice, ModalExpression, ModularAbility, MorphAbility, Name, NameReference, NamedExpression, NinjutsuAbility, NonExpression, NumberOfExpression, NumberTypeEnum, NumberValue, OfferingAbility, OrExpression, OutlastAbility, OverloadAbility, PTExpression, PartnerAbility, PlayExpression, PoisonousAbility, PreventDamageExpression, ProtectionAbility, ProwlAbility, PutInZoneExpression, RampageAbility, RandomOrderPlacement, RecoverAbility, RedirectAllDamageExpression, RegularAbility, ReinforceAbility, RemainsExpression, ReminderText, RenownAbility, ReplicateAbility, ReturnExpression, RevealExpression, RippleAbility, SacrificeExpression, ScavengeAbility, SearchLibraryExpression, SelfReference, ShuffleLibraryExpression, SimpleKeywordAbility, SoulshiftAbility, SpliceAbility, Statement, StatementBlock, SurgeAbility, SurveilAbility, SurveilExpression, SuspendAbility, TapUntapExpression, TargetExpression, TextBox, ThereExistsStatement, TransfigureAbility, TransmuteAbility, TributeAbility, TriggerRestrictionStatement, TriggeredAbility, TypeExpression, UncastExpression, UnearthAbility, UntilStatement, ValueGtEqExpression, ValueLtEqExpression, VanishingAbility, WardAbility, WebSlingingAbility, WhenStatement, WheneverStatement, WhoExpression, WithExpression, Zone)
+    AbilitySequenceStatement, AbilityWord, AbsorbAbility, ActivationRestrictionStatement, ActivationStatement, AddManaExpression, AddRemoveExpression, AffinityAbility, AfflictAbility, AmplifyAbility, AndExpression, AndOrExpression, AnnihilatorAbility, AnyColorSpecifier, AsLongAsStatement, AsStatement, AtStatement, AuraSwapAbility, AwakenAbility, BandingAbility, BeingStatement, BestowAbility, BloodthirstAbility, BushidoAbility, BuybackAbility, Card, CardDrawExpression, CastExpression, ChampionAbility, ChangeZoneExpression, ChoiceExpression, ColorExpression, CompoundStatement, CompoundTerminator, ConniveExpression, ControlExpression, CopyExpression, CostIncreaseStatement, CostSequenceExpression, CreateTokenExpression, CrewAbility, CumulativeUpkeepAbility, CyclingAbility, DamageType, DamageTypeEnum, DashAbility, DashCostExpression, DealsDamageExpression, DealsDamageVariant, DescriptionExpression, DestroyExpression, DevourAbility, DiesExpression, DiscardExpression, DontStatement, DredgeAbility, EachExpression, EchoAbility, EmbalmAbility, EmergeAbility, EnchantAbility, EntwineAbility, EquipAbility, EscalateAbility, EternalizeAbility, EvokeAbility, ExceptStatement, ExileExpression, Expression, ExpressionStatement, FabricateAbility, FadingAbility, FlashbackAbility, ForStatement, FortifyAbility, FrenzyAbility, GainLoseExpression, GenericDeclarationExpression, GraftAbility, HexproofAbility, HiddenAgendaAbility, IfStatement, InAdditionToTypesExpression, IndefiniteSingularExpression, ItReference, JumpStartAbility, Keyword, KeywordAbility, KeywordAbilityListStatement, KickerAbility, LandwalkAbility, LevelUpAbility, LookExpression, LoseLifeExpression, MadnessAbility, ManaExpression, ManaSpendableStatement, MayStatement, MayhemAbility, MillExpression, MiracleAbility, ModalChoice, ModalExpression, ModularAbility, MorphAbility, Name, NameReference, NamedExpression, NinjutsuAbility, NonExpression, NumberOfExpression, NumberTypeEnum, NumberValue, OfferingAbility, OrExpression, OutlastAbility, OverloadAbility, PTExpression, PartnerAbility, PlayExpression, PoisonousAbility, PreventDamageExpression, ProtectionAbility, ProwlAbility, PutInZoneExpression, RampageAbility, RandomOrderPlacement, RecoverAbility, RedirectAllDamageExpression, RegularAbility, ReinforceAbility, RemainsExpression, ReminderText, RenownAbility, ReplicateAbility, ReturnExpression, RevealExpression, RippleAbility, SacrificeExpression, ScavengeAbility, SearchLibraryExpression, SelfReference, ShuffleLibraryExpression, SimpleKeywordAbility, SoulshiftAbility, SpliceAbility, Statement, StatementBlock, SurgeAbility, SurveilAbility, SurveilExpression, SuspendAbility, TapUntapExpression, TargetExpression, TextBox, ThereExistsStatement, TransfigureAbility, TransmuteAbility, TributeAbility, TriggerRestrictionStatement, TriggeredAbility, TypeExpression, UncastExpression, UnearthAbility, UntilStatement, ValueExpression, ValueGtEqExpression, ValueLtEqExpression, VanishingAbility, WardAbility, WebSlingingAbility, WhenStatement, WheneverStatement, WhoExpression, WithExpression, Zone)
 
 
 # ---------------------------------------------------------------------------
@@ -1993,6 +1993,28 @@ class CardTransformer(Transformer):
             if isinstance(item, Statement):
                 statement = item
         return WhoExpression(statement=statement)
+    def loselifeexpression(self, items):
+        # playerdeclref? "lose"["s"] (valueexpression? "life" | "life" valueexpression)
+        # | playerdeclref "lost" (valueexpression? "life" | "life" valueexpression) timeexpression?
+        player = None
+        amount = None
+        timing = None
+        past_tense = False
+        expressions = []
+        for item in items:
+            if isinstance(item, Token):
+                if str(item).lower() == "lost":
+                    past_tense = True
+                continue
+            if isinstance(item, ValueExpression):
+                amount = item
+            elif isinstance(item, Expression):
+                expressions.append(item)
+        if expressions:
+            player = expressions[0]
+            if len(expressions) > 1:
+                timing = expressions[1]
+        return LoseLifeExpression(player=player, amount=amount, timing=timing, past_tense=past_tense)
 
 
 # ---------------------------------------------------------------------------
