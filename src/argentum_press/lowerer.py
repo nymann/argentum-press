@@ -1147,16 +1147,6 @@ class KotlinLowerer:
         return "Effects.LoseLife()"
 
     @effect.register
-    def _(self, e: ast.DiscardExpression) -> str:
-        # "<player>? discard(s) <subject> at random?" — used both as an effect
-        # ("target player discards a card") and as a trigger predicate
-        # ("whenever you discard a card"). The rich AST carries player/subject
-        # as surface descriptors that don't map cleanly to argentum-engine's
-        # Effects.Discard(count, target) signature. Emit a stub so the gap
-        # moves past DiscardExpression to whatever the next unhandled node is.
-        return "Effects.Discard()"
-
-    @effect.register
     def _(self, e: ast.ChoiceExpression) -> str:
         # "choose <X>" — the rich AST carries the operand as a surface
         # descriptor only; we emit a stub call so the gap moves past
