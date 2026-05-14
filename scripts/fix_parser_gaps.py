@@ -30,8 +30,9 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import datetime
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -492,23 +493,165 @@ def render_prompt(ctx: GapContext) -> str:
 
 
 # ---------------------------------------------------------------------------
+# recording (Phase 0 instrumentation)
+# ---------------------------------------------------------------------------
+
+
+# Tool-use names we tally per iteration. Anything outside this set lands in the
+# generic "other" bucket — but we don't report "other" in the tsv columns,
+# which are explicitly named (n_reads, n_greps, …). Extending the tsv schema
+# is a breaking change for downstream summary tools, so add columns judiciously.
+_TRACKED_TOOLS = {"Read", "Grep", "Edit", "Write", "Bash"}
+
+
+RUNS_TSV_HEADER = (
+    "started_at\tcommit_before\tcommit_after\tgap_kind\tgap_label\tcard_name\t"
+    "scanned\tcost_usd\tnum_turns\twall_s\tn_reads\tn_greps\tn_edits\tn_writes\t"
+    "n_bash\toutcome\tdescription"
+)
+
+
+def _gap_slug(label: str) -> str:
+    """File-safe encoding of a gap label.
+
+    Labels are things like ``unmodeled-rule:colorandexpr`` or
+    ``parse-error:no terminal matches '@' …``. Slashes, colons, spaces, and
+    other punctuation become single underscores so the slug works as a path
+    component and roundtrips cleanly through TSVs.
+    """
+    if not label:
+        return "no-gap"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("_")
+    return (slug[:80] or "no-gap")
+
+
+def _iso_now() -> str:
+    """ISO-8601 UTC timestamp with no colons, safe as a path component."""
+    return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+@dataclass(slots=True)
+class IterationRecord:
+    """One row's worth of data, accumulated across an iteration.
+
+    The Recorder builds these and writes them as a tsv row after the iteration
+    settles (pass/abort/etc.). Counts default to 0 so a row is still well-formed
+    even when claude exits early before emitting any tool_use events.
+    """
+
+    started_at: str
+    commit_before: str
+    iter_n: int
+    gap_kind: str = ""
+    gap_label: str = ""
+    card_name: str = ""
+    scanned: int = 0
+    cost_usd: float = 0.0
+    num_turns: int = 0
+    wall_s: float = 0.0
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    commit_after: str = ""
+    outcome: str = ""
+    description: str = ""
+
+    def as_tsv_row(self) -> str:
+        tc = self.tool_counts
+        cells: list[str] = [
+            self.started_at,
+            self.commit_before,
+            self.commit_after,
+            self.gap_kind,
+            self.gap_label,
+            self.card_name,
+            str(self.scanned),
+            f"{self.cost_usd:.6f}",
+            str(self.num_turns),
+            f"{self.wall_s:.3f}",
+            str(tc.get("Read", 0)),
+            str(tc.get("Grep", 0)),
+            str(tc.get("Edit", 0)),
+            str(tc.get("Write", 0)),
+            str(tc.get("Bash", 0)),
+            self.outcome,
+            self.description.replace("\t", " ").replace("\n", " "),
+        ]
+        return "\t".join(cells)
+
+
+class Recorder:
+    """Per-record-dir state for Phase 0 instrumentation.
+
+    Lifecycle: ``start_iteration()`` returns an ``IterationRecord``; the caller
+    populates it as the iteration progresses, then calls ``finish_iteration``.
+    The recorder writes the TSV header on first use and appends one row per
+    finished iteration. Transcript and scan jsonl files are managed by helpers
+    (``scan_jsonl_path``, ``transcript_jsonl_path``) so the rest of the
+    orchestrator can stream directly to them.
+    """
+
+    def __init__(self, record_dir: Path) -> None:
+        self.record_dir = record_dir
+        self.record_dir.mkdir(parents=True, exist_ok=True)
+        self.runs_tsv = self.record_dir / "runs.tsv"
+        if not self.runs_tsv.exists():
+            self.runs_tsv.write_text(RUNS_TSV_HEADER + "\n", encoding="utf-8")
+
+    def start_iteration(self, iter_n: int) -> IterationRecord:
+        return IterationRecord(
+            started_at=_iso_now(),
+            commit_before=git("rev-parse", "HEAD", check=False) or "",
+            iter_n=iter_n,
+        )
+
+    def scan_jsonl_path(self, rec: IterationRecord, slug: str | None = None) -> Path:
+        # Slug is unknown at scan-time (the gap hasn't been found yet), so
+        # callers pass "scan" as a sentinel until a real label is available.
+        # Append "-scan" so the scan file and the transcript file never collide.
+        s = slug or "scan"
+        return self.record_dir / f"{rec.started_at}-{rec.iter_n:03d}-{s}.scan.jsonl"
+
+    def transcript_jsonl_path(self, rec: IterationRecord, slug: str) -> Path:
+        return self.record_dir / f"{rec.started_at}-{rec.iter_n:03d}-{slug}.jsonl"
+
+    def finish_iteration(self, rec: IterationRecord) -> None:
+        rec.commit_after = git("rev-parse", "HEAD", check=False) or rec.commit_before
+        with self.runs_tsv.open("a", encoding="utf-8") as f:
+            f.write(rec.as_tsv_row() + "\n")
+
+
+# ---------------------------------------------------------------------------
 # claude streaming
 # ---------------------------------------------------------------------------
 
 
-def stream_claude(prompt: str) -> tuple[int, str]:
+def stream_claude(
+    prompt: str,
+    *,
+    transcript_path: Path | None = None,
+    record: IterationRecord | None = None,
+    claude_cmd: list[str] | None = None,
+) -> tuple[int, str]:
     """Pipe ``prompt`` to ``claude -p`` and render its stream-json output.
 
     Returns (exit_code, last_assistant_text). The last assistant text is the
     agent's final summary, used as the body of the per-iteration commit.
+
+    When ``transcript_path`` is set, every raw NDJSON line received from claude
+    is appended verbatim — preserving the exact wire format so replay analysis
+    can re-render it identically. When ``record`` is set, per-event metrics
+    (tool-use counts, cost, num_turns, wall_s) are folded into the record in
+    place. ``claude_cmd`` lets tests swap in a shim binary; production code
+    passes None and gets the real ``claude -p`` invocation.
     """
+    cmd = claude_cmd or [
+        "claude", "-p",
+        "--dangerously-skip-permissions",
+        "--output-format", "stream-json",
+        "--verbose",
+    ]
+    t_start = time.monotonic()
     proc = subprocess.Popen(
-        [
-            "claude", "-p",
-            "--dangerously-skip-permissions",
-            "--output-format", "stream-json",
-            "--verbose",
-        ],
+        cmd,
         cwd=REPO,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -520,33 +663,54 @@ def stream_claude(prompt: str) -> tuple[int, str]:
     proc.stdin.write(prompt)
     proc.stdin.close()
 
+    transcript_fh = transcript_path.open("a", encoding="utf-8") if transcript_path else None
     last_text = ""
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        if not line.strip():
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            stamp(f"{DIM}{line[:240]}{RESET}")
-            continue
-        text = _render_event(ev)
-        if text is not None:
-            # Tool results are visually attached to the preceding tool_use
-            # (often multi-line file content, sometimes 20+ lines). A second
-            # [HH:MM:SS] on the first line of that block reads as a separate
-            # event, fights with the highlighting, and adds nothing — the
-            # tool_use stamp already carries the time. Print bare so the
-            # output sits cleanly under its command.
-            if ev.get("type") == "user":
-                print(text, flush=True)
-            else:
-                stamp(text)
-        if ev.get("type") == "assistant":
-            for c in ev.get("message", {}).get("content", []) or []:
-                if c.get("type") == "text":
-                    last_text = c.get("text", "") or last_text
-    proc.wait()
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if transcript_fh is not None and line.strip():
+                # Mirror raw bytes (one event per line) so downstream replay
+                # tooling sees the same wire format the orchestrator saw.
+                transcript_fh.write(line + "\n")
+                transcript_fh.flush()
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                stamp(f"{DIM}{line[:240]}{RESET}")
+                continue
+            text = _render_event(ev)
+            if text is not None:
+                # Tool results are visually attached to the preceding tool_use
+                # (often multi-line file content, sometimes 20+ lines). A second
+                # [HH:MM:SS] on the first line of that block reads as a separate
+                # event, fights with the highlighting, and adds nothing — the
+                # tool_use stamp already carries the time. Print bare so the
+                # output sits cleanly under its command.
+                if ev.get("type") == "user":
+                    print(text, flush=True)
+                else:
+                    stamp(text)
+            if ev.get("type") == "assistant":
+                for c in ev.get("message", {}).get("content", []) or []:
+                    if c.get("type") == "text":
+                        last_text = c.get("text", "") or last_text
+                    elif c.get("type") == "tool_use" and record is not None:
+                        name = c.get("name") or ""
+                        if name in _TRACKED_TOOLS:
+                            record.tool_counts[name] = (
+                                record.tool_counts.get(name, 0) + 1
+                            )
+            elif ev.get("type") == "result" and record is not None:
+                record.cost_usd = float(ev.get("total_cost_usd", 0) or 0)
+                record.num_turns = int(ev.get("num_turns", 0) or 0)
+        proc.wait()
+    finally:
+        if transcript_fh is not None:
+            transcript_fh.close()
+    if record is not None:
+        record.wall_s = time.monotonic() - t_start
     return proc.returncode, last_text
 
 
@@ -913,7 +1077,9 @@ class GapSubprocessError(RuntimeError):
 
 
 def _find_gap_subprocess(
-    set_code: str, project_dir: Path
+    set_code: str, project_dir: Path,
+    *,
+    scan_jsonl_path: Path | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Run gap-finding in a fresh subprocess so the agent's last edits take
     effect. Returns ``(gap, ast_text, parse_error_block)`` — ``gap`` is None
@@ -930,6 +1096,10 @@ def _find_gap_subprocess(
     Inherits ``ARGENTUM_PARSE_CACHE`` (and any sibling env) so the worker
     populates the same parse cache the orchestrator's invalidate-after-fix
     pruning operates on.
+
+    When ``scan_jsonl_path`` is set, every NDJSON line emitted by the worker
+    is mirrored verbatim into that file — separate from the agent transcript
+    so the scan timeline can be reconstructed independently.
     """
     cmd = [
         "uv", "run", "python", "-m", "argentum_press._fix_loop_gap",
@@ -945,29 +1115,37 @@ def _find_gap_subprocess(
     )
     assert proc.stdout and proc.stderr
 
+    scan_fh = scan_jsonl_path.open("a", encoding="utf-8") if scan_jsonl_path else None
     result_event: dict[str, Any] | None = None
-    for raw in proc.stdout:
-        line = raw.rstrip("\n").strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            # Non-JSON output (e.g. a stray print) — surface it but don't
-            # treat it as fatal.
-            stamp(f"{DIM}{line[:240]}{RESET}")
-            continue
-        et = event.get("type")
-        if et == "log":
-            # Map the worker's named color → local ANSI constant; default
-            # is DIM. _ansi() already gates on TTY/NO_COLOR upstream, so
-            # color names safely degrade to empty strings off-tty.
-            color_name = event.get("color")
-            color_map = {"green": GREEN, "red": RED, "yellow": YELLOW, "cyan": CYAN}
-            prefix = color_map.get(color_name, DIM)
-            stamp(f"{prefix}{event.get('msg', '')}{RESET}")
-        elif et == "result":
-            result_event = event
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n").strip()
+            if not line:
+                continue
+            if scan_fh is not None:
+                scan_fh.write(line + "\n")
+                scan_fh.flush()
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # Non-JSON output (e.g. a stray print) — surface it but don't
+                # treat it as fatal.
+                stamp(f"{DIM}{line[:240]}{RESET}")
+                continue
+            et = event.get("type")
+            if et == "log":
+                # Map the worker's named color → local ANSI constant; default
+                # is DIM. _ansi() already gates on TTY/NO_COLOR upstream, so
+                # color names safely degrade to empty strings off-tty.
+                color_name = event.get("color")
+                color_map = {"green": GREEN, "red": RED, "yellow": YELLOW, "cyan": CYAN}
+                prefix = color_map.get(color_name, DIM)
+                stamp(f"{prefix}{event.get('msg', '')}{RESET}")
+            elif et == "result":
+                result_event = event
+    finally:
+        if scan_fh is not None:
+            scan_fh.close()
 
     stderr_output = proc.stderr.read()
     proc.wait()
@@ -998,7 +1176,7 @@ def _find_gap_subprocess(
     return gap, result_event.get("ast"), result_event.get("parse_error_block")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("set_code")
     ap.add_argument("project_dir", type=Path)
@@ -1006,7 +1184,20 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-commit", action="store_true")
     ap.add_argument("--allow-dirty", action="store_true")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--record", type=Path, default=None,
+        help="Directory to stream per-iteration NDJSON transcripts + runs.tsv into.",
+    )
+    ap.add_argument(
+        "--description", type=str, default="",
+        help="Free-text label propagated into the runs.tsv description column.",
+    )
+    ap.add_argument(
+        "--claude-cmd", type=str, default=None,
+        help="JSON-encoded list of argv strings overriding the default ``claude -p`` "
+             "invocation. Tests use this to point at a fake-claude shim.",
+    )
+    args = ap.parse_args(argv)
 
     if not args.allow_dirty and git_dirty():
         print(
@@ -1015,6 +1206,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    claude_cmd: list[str] | None = None
+    if args.claude_cmd:
+        claude_cmd = json.loads(args.claude_cmd)
+
+    recorder = Recorder(args.record) if args.record else None
 
     prev_label = ""
     i = 0
@@ -1025,18 +1222,33 @@ def main() -> int:
             return 0
         print(f"\n{BOLD}=== iteration {i} ==={RESET}", flush=True)
 
+        rec = recorder.start_iteration(i) if recorder else None
+        scan_path = recorder.scan_jsonl_path(rec) if (recorder and rec) else None
+
         try:
             gap, ast_text, pe_block = _find_gap_subprocess(
-                args.set_code, args.project_dir
+                args.set_code, args.project_dir,
+                scan_jsonl_path=scan_path,
             )
         except GapSubprocessError as e:
             stamp(f"{RED}{e}{RESET}")
+            if recorder and rec:
+                rec.outcome = "abort_subprocess"
+                rec.description = args.description
+                recorder.finish_iteration(rec)
             return 2
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
         if gap.label == prev_label:
             stamp(f"{RED}no progress: label '{gap.label}' twice in a row. abort.{RESET}")
+            if recorder and rec:
+                rec.gap_kind = gap.kind
+                rec.gap_label = gap.label
+                rec.card_name = gap.card_name
+                rec.outcome = "abort_no_progress"
+                rec.description = args.description
+                recorder.finish_iteration(rec)
             return 2
 
         ctx = gather_context(
@@ -1058,9 +1270,26 @@ def main() -> int:
             print(prompt)
             return 0
 
-        rc, summary = stream_claude(prompt)
+        if rec is not None and recorder is not None:
+            rec.gap_kind = gap.kind
+            rec.gap_label = gap.label
+            rec.card_name = gap.card_name
+            transcript_path = recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+        else:
+            transcript_path = None
+
+        rc, summary = stream_claude(
+            prompt,
+            transcript_path=transcript_path,
+            record=rec,
+            claude_cmd=claude_cmd,
+        )
         if rc != 0:
             stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
+            if recorder and rec:
+                rec.outcome = "claude_error"
+                rec.description = args.description
+                recorder.finish_iteration(rec)
             return rc
 
         stamp(f"{DIM}running pytest...{RESET}")
@@ -1068,6 +1297,10 @@ def main() -> int:
         if rc != 0:
             stamp(f"{RED}pytest red after agent edit; abort.{RESET}")
             print(output[-2000:], file=sys.stderr)
+            if recorder and rec:
+                rec.outcome = "abort_pytest"
+                rec.description = args.description
+                recorder.finish_iteration(rec)
             return rc
         stamp(f"{GREEN}pytest green.{RESET}")
 
@@ -1090,6 +1323,11 @@ def main() -> int:
             from argentum_press.parse_cache import invalidate_label
             removed = invalidate_label(gap.label)
             stamp(f"{DIM}parse-cache: invalidated {removed} entr(ies) for '{gap.label}'{RESET}")
+
+        if recorder and rec:
+            rec.outcome = "pass"
+            rec.description = args.description
+            recorder.finish_iteration(rec)
 
         prev_label = gap.label
 
