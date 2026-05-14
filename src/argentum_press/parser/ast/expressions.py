@@ -705,3 +705,11 @@ class SuspectExpression(TargetExpression):
     """`suspect <reference>` — marks a permanent as suspected, making it a suspect until end of turn."""
 
     reference: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AbleExpression(Expression):
+    """`<reference> able (to <statement> do so)` — expresses capability of a permanent or player, optionally conditioned on a statement."""
+
+    reference: Expression | None = None
+    condition: Statement | None = None
