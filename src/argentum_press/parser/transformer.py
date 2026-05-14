@@ -1113,6 +1113,11 @@ class CardTransformer(Transformer):
         # consume it; downstream only cares about presence.
         return None
 
+    def attachedmodifier(self, items):
+        # "attached (only? to <ref>)?" — surface marker mirroring
+        # controlmodifier; the parent modifier rule doesn't consume it.
+        return None
+
     def targetdecorator(self, items):
         # "target" or "<value> target"
         if not items:
