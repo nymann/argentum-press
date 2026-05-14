@@ -86,12 +86,11 @@ def main(argv: list[str]) -> int:
         )
         _log(f"fetched {len(cards)} cards (catalog cache={cache_state})")
 
-        last_emitted = [0]
-
-        def _progress(scanned: int, total: int) -> None:
-            if scanned - last_emitted[0] >= 25 or scanned == total:
-                _log(f"scanning... {scanned}/{total}")
-                last_emitted[0] = scanned
+        def _progress(scanned: int, total: int, card_name: str) -> None:
+            # One line per card before parse so the user sees what's being
+            # worked on — cache hits emit instantly, slow Earley parses
+            # leave the card name visible until the next one appears.
+            _log(f"[{scanned:>3}/{total}] {card_name}")
 
         _log("scanning for first gap...")
         report = find_first_gap(cards, project_dir, set_code, progress=_progress)
