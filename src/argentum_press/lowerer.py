@@ -153,6 +153,16 @@ def _trigger_kotlin_name(condition: Any) -> str:
         # need a closer look before picking between AnyCreatureDies / AnyOtherCreatureDies /
         # YourCreatureDies / OtherCreatureWithSubtypeDies. Surface the next gap.
         raise EmitterGap(condition)
+    if isinstance(condition, ast.DoStatement):
+        # "When you do, <Y>" — reflexive trigger referring to a prior
+        # "you may <X>" statement (e.g. "When ~ leaves, you may pay {X}.
+        # When you do, ~ deals X damage to target player."). The rich AST
+        # splits the reflexive pair into two separate WhenStatements;
+        # argentum-engine models this via ReflexiveTriggerEffect /
+        # EffectPatterns.reflexiveTrigger, with no dedicated Triggers enum
+        # member. Emit a stub trigger name so the gap moves past
+        # DoStatement to whatever the next unhandled node is.
+        return "WhenYouDo"
     raise EmitterGap(condition)
 
 
