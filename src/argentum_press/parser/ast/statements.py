@@ -110,6 +110,13 @@ class ThenStatement(Statement):
 
 
 @dataclass(frozen=True, slots=True)
+class ThereExistsStatement(Statement):
+    """``there is/are <decl>`` — existence claim used inside conditionals."""
+
+    subject: Expression
+
+
+@dataclass(frozen=True, slots=True)
 class KeywordAbilityListStatement(Statement):
     """Comma-separated sequence of keyword abilities (``flying, haste, first strike``)."""
 

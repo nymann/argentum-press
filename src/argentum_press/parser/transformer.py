@@ -182,6 +182,7 @@ from argentum_press.parser.ast import (
     TapUntapExpression,
     TargetExpression,
     TextBox,
+    ThereExistsStatement,
     TransfigureAbility,
     TransmuteAbility,
     TributeAbility,
@@ -1414,6 +1415,13 @@ class CardTransformer(Transformer):
         # `<subject> cost[s] <mana> more to cast/activate` — literal strings
         # are dropped by the grammar, leaving the declref and the mana symbol.
         return CostIncreaseStatement(subject=items[0], amount=items[1])
+
+    def thereexistsstatement(self, items):
+        # `there is/are <decl>` — existence claim used as the conditional of
+        # an `as long as`/`if` clause (e.g. "as long as there are eight or
+        # more cards in your graveyard, …"). Literal "there"/"is"/"are" are
+        # dropped by the grammar; only the declaration survives.
+        return ThereExistsStatement(subject=items[0])
 
     # -- Compound statements ----------------------------------------------
 
