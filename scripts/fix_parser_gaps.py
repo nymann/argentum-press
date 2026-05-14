@@ -25,11 +25,13 @@ post-edit run is authoritative (loop aborts on red).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import textwrap
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1519,6 +1521,299 @@ def _run_replay(
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Supervisor: catch crashes / supervise-able aborts, ask Claude to repair,
+# pytest-gate the fix, then os.execv back into a fresh interpreter so the
+# repair takes effect. State persists across exec so the budget guard
+# survives the process replacement.
+# ---------------------------------------------------------------------------
+
+
+SUPERVISOR_STATE_PATH = Path("/tmp/argentum-press-supervisor-state.json")
+
+# Iteration outcomes (runs.tsv `outcome` column) that the supervisor offers
+# to repair. `abort_no_progress` is deliberately excluded — it's a
+# structural "I'm stuck, no code fix will help" signal, not a code bug.
+_SUPERVISE_OUTCOMES: frozenset[str] = frozenset({
+    "abort_subprocess",  # gap subprocess crashed with non-zero rc
+    "abort_pytest",      # freeform agent's fix broke the test suite
+    "claude_error",      # claude -p itself failed
+})
+
+# Playbook abort tags that warrant a repair pass. Most playbook aborts mean
+# the LLM emitted something the orchestrator/libcst rejected — exactly the
+# kind of bug Claude can patch. `aborted-p4-duplicate` and
+# `aborted-classify-unchanged` are NOT here because the strategy chain
+# already falls back to freeform for those.
+_SUPERVISE_PLAYBOOK_TAGS: frozenset[str] = frozenset({
+    "playbook_aborted-p3",
+    "playbook_aborted-p4",
+    "playbook_aborted-p5",
+    "playbook_aborted-p8",
+    "playbook_aborted-p9",
+    "playbook_aborted-retry-pytest",
+    "playbook_aborted-u3",
+    "playbook_aborted-u4",
+    "playbook_aborted-u5",
+    "playbook_aborted-u8",
+    "playbook_aborted-u9",
+    "playbook_aborted-l3",
+    "playbook_aborted-l4",
+    "playbook_aborted-l5",
+    "playbook_aborted-l6",  # libcst rejection — what just bit us
+    "playbook_aborted-l8",
+    "playbook_aborted-l9",
+})
+
+
+def _supervisor_load_state() -> dict[str, Any]:
+    if not SUPERVISOR_STATE_PATH.exists():
+        return {
+            "last_fingerprint": None,
+            "consecutive_same": 0,
+            "total_recoveries": 0,
+            "history": [],
+        }
+    try:
+        return json.loads(SUPERVISOR_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "last_fingerprint": None,
+            "consecutive_same": 0,
+            "total_recoveries": 0,
+            "history": [],
+        }
+
+
+def _supervisor_save_state(state: dict[str, Any]) -> None:
+    try:
+        SUPERVISOR_STATE_PATH.write_text(
+            json.dumps(state, indent=2), encoding="utf-8",
+        )
+    except OSError as e:
+        stamp(f"{YELLOW}[supervisor] failed to persist state: {e}{RESET}")
+
+
+def _supervisor_clear_state() -> None:
+    SUPERVISOR_STATE_PATH.unlink(missing_ok=True)
+
+
+def _supervisor_fingerprint(
+    *, kind: str, exception_type: str | None = None,
+    traceback_frame: str | None = None, outcome_tag: str | None = None,
+    gap_label: str | None = None,
+) -> str:
+    """Stable hash that identifies "the same failure".
+
+    For crashes: top frame + exception type. For aborts: outcome tag +
+    gap label. Same kind of failure twice in a row = supervisor bails.
+    """
+    if kind == "crash":
+        seed = f"crash:{exception_type}:{traceback_frame}"
+    else:
+        seed = f"abort:{outcome_tag}:{gap_label}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def _supervisor_last_outcome(record_dir: Path | None) -> tuple[str, dict[str, str]] | None:
+    """Pull the most-recent row from runs.tsv as (outcome, full_row_dict).
+
+    Returns None when no recorder dir, no tsv, or no rows. The full row is
+    handy for the repair prompt — Claude needs the card name, gap label,
+    commit_before, etc.
+    """
+    if record_dir is None:
+        return None
+    tsv = record_dir / "runs.tsv"
+    if not tsv.exists():
+        return None
+    try:
+        lines = tsv.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if len(lines) < 2:
+        return None
+    header = lines[0].split("\t")
+    last = lines[-1].split("\t")
+    row = dict(zip(header, last))
+    return row.get("outcome", ""), row
+
+
+def _supervisor_collect_context(
+    *,
+    failure_kind: str,
+    fingerprint: str,
+    argv: list[str],
+    exception_info: tuple[type, BaseException, Any] | None,
+    runs_row: dict[str, str] | None,
+    record_dir: Path | None,
+) -> dict[str, Any]:
+    """Snapshot everything Claude needs to repair the failure.
+
+    Kept inline (no external file dependency) so the prompt is self-
+    contained; we write it to a JSON file the supervisor then references.
+    """
+    import traceback as _tb
+    ctx: dict[str, Any] = {
+        "failure_kind": failure_kind,
+        "fingerprint": fingerprint,
+        "argv": argv,
+        "runs_row": runs_row or {},
+    }
+    if exception_info is not None:
+        exc_type, exc_val, exc_tb = exception_info
+        ctx["exception"] = {
+            "type": exc_type.__name__,
+            "message": str(exc_val),
+            "traceback": "".join(_tb.format_exception(exc_type, exc_val, exc_tb)),
+        }
+    # Recent commit log for revert-vs-fix-forward judgement.
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-15"],
+        cwd=REPO, capture_output=True, text=True, check=False,
+    )
+    ctx["recent_commits"] = log.stdout.strip()
+    # Last 200 lines of the playbook trace dump, if one was written this
+    # iteration. Playbook aborts dump a JSON trace into the record dir;
+    # the most recent one is typically the relevant one.
+    if record_dir is not None and record_dir.is_dir():
+        trace_files = sorted(
+            (p for p in record_dir.glob("*-aborted-*.json")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if trace_files:
+            ctx["latest_playbook_trace"] = str(trace_files[0])
+    return ctx
+
+
+def _supervisor_repair_prompt(context_path: Path) -> str:
+    return textwrap.dedent(f"""\
+        The argentum-press fix-loop crashed (or aborted with a code-bug
+        outcome) while processing a card. Your job: diagnose, repair, and
+        commit. The orchestrator will be re-launched after you exit.
+
+        Context is in {context_path}. Read it first. It contains:
+        - `failure_kind`: "crash" (uncaught exception) or "abort" (playbook
+          returned a fixable error outcome).
+        - `exception` or `runs_row`: the specific signal.
+        - `latest_playbook_trace`: full JSON trace of the aborted playbook
+          run if applicable (the LLM-emitted plan, where validation
+          failed, etc).
+        - `recent_commits`: HEAD..HEAD-15 in case the culprit is a recent
+          commit and reverting is the right move.
+
+        Decide whether to:
+        (a) Fix the bug forward (typo in a handler, prompt tweak, missing
+            self., etc.). Best when the bug is local and the fix is small.
+        (b) Revert the most recent commit if it's the culprit. Best when
+            HEAD landed something structurally wrong.
+
+        Then commit your change. The orchestrator will pytest-gate it
+        before relaunching, so don't worry about test green — pytest will
+        tell us.
+
+        Constraints:
+        - Don't push. The supervisor explicitly does not push repair
+          commits; the user will inspect first.
+        - Don't change the supervisor itself ({Path(__file__).name})
+          unless the supervisor IS the bug.
+        - Be terse in the commit message: prefix it `supervisor-repair:`.
+    """)
+
+
+def _supervisor_run_repair(context_path: Path) -> int:
+    """Spawn claude -p with the repair prompt. Returns its exit code."""
+    prompt = _supervisor_repair_prompt(context_path)
+    cmd = [
+        "claude", "-p",
+        "--dangerously-skip-permissions",
+        prompt,
+    ]
+    stamp(f"{BOLD}[supervisor] invoking claude -p for repair...{RESET}")
+    proc = subprocess.run(cmd, cwd=REPO, check=False)
+    return proc.returncode
+
+
+def _supervisor_dispatch(
+    *,
+    argv: list[str],
+    failure_kind: str,
+    fingerprint: str,
+    exception_info: tuple[type, BaseException, Any] | None,
+    runs_row: dict[str, str] | None,
+    record_dir: Path | None,
+    max_total_recoveries: int = 5,
+) -> bool:
+    """Run one repair cycle. Returns True iff the caller should os.execv
+    back into a fresh interpreter; False to bail with the original rc.
+    """
+    state = _supervisor_load_state()
+    if state["last_fingerprint"] == fingerprint and state["consecutive_same"] >= 1:
+        stamp(
+            f"{RED}[supervisor] same failure twice in a row "
+            f"(fingerprint={fingerprint}); not relaunching.{RESET}"
+        )
+        _supervisor_clear_state()
+        return False
+    if state["total_recoveries"] >= max_total_recoveries:
+        stamp(
+            f"{RED}[supervisor] recovery budget exhausted "
+            f"({state['total_recoveries']}/{max_total_recoveries}); not relaunching.{RESET}"
+        )
+        _supervisor_clear_state()
+        return False
+
+    context = _supervisor_collect_context(
+        failure_kind=failure_kind,
+        fingerprint=fingerprint,
+        argv=argv,
+        exception_info=exception_info,
+        runs_row=runs_row,
+        record_dir=record_dir,
+    )
+    context_path = REPO / ".supervisor-context.json"
+    context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
+    stamp(
+        f"{BOLD}[supervisor] dispatching repair: "
+        f"kind={failure_kind} fingerprint={fingerprint} "
+        f"recoveries={state['total_recoveries']}/{max_total_recoveries}{RESET}"
+    )
+
+    rc = _supervisor_run_repair(context_path)
+    if rc != 0:
+        stamp(f"{RED}[supervisor] claude exited rc={rc}; not relaunching.{RESET}")
+        _supervisor_clear_state()
+        return False
+
+    # Pytest gate before re-launch.
+    stamp(f"{BOLD}[supervisor] pytest-gating the repair...{RESET}")
+    pytest_rc, _ = run_pytest(REPO)
+    if pytest_rc != 0:
+        stamp(
+            f"{RED}[supervisor] pytest red after repair "
+            f"(rc={pytest_rc}); not relaunching.{RESET}"
+        )
+        _supervisor_clear_state()
+        return False
+    stamp(f"{GREEN}[supervisor] pytest green; relaunching orchestrator.{RESET}")
+
+    # Bump and persist.
+    if state["last_fingerprint"] == fingerprint:
+        state["consecutive_same"] += 1
+    else:
+        state["consecutive_same"] = 0
+    state["last_fingerprint"] = fingerprint
+    state["total_recoveries"] += 1
+    state["history"].append({
+        "fingerprint": fingerprint,
+        "kind": failure_kind,
+        "outcome_tag": (runs_row or {}).get("outcome"),
+    })
+    _supervisor_save_state(state)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("set_code", nargs="?", default="",
@@ -1586,6 +1881,15 @@ def main(argv: list[str] | None = None) -> int:
              "playbook = structured DAG of LLM + libcst steps for all three "
              "gap kinds (parse-error / unmodeled-rule / lower); freeform is "
              "the last-resort fallback for unknown kinds.",
+    )
+    ap.add_argument(
+        "--supervise", action="store_true",
+        help="Auto-repair on crashes and code-bug aborts: dump context, "
+             "spawn claude -p to fix the underlying bug, pytest-gate the "
+             "result, then os.execv back into a fresh interpreter so the "
+             "fix takes effect. Bails after 5 total recoveries or the "
+             "same failure twice in a row. State persists in "
+             "/tmp/argentum-press-supervisor-state.json.",
     )
     args = ap.parse_args(argv)
 
@@ -1842,5 +2146,101 @@ def main(argv: list[str] | None = None) -> int:
             playbook_pool.forget_all()
 
 
+def _entry_with_supervision() -> int:
+    """Outer entry that wraps main() in supervisor logic.
+
+    Pre-parses argv to decide whether supervision is on; routes everything
+    else through main() unchanged. On a failure that the supervisor knows
+    how to repair, it dispatches to Claude, gates on pytest, and
+    re-execs the same argv into a fresh interpreter. Otherwise it surfaces
+    the original return code / exception.
+
+    Plain `--supervise` only modifies failure handling — successful runs
+    are unaffected; the state file is cleared so the next supervised run
+    starts with a fresh budget.
+    """
+    argv = sys.argv[1:]
+    supervise = "--supervise" in argv
+
+    if not supervise:
+        return main()
+
+    # --record is the only flag we need to *read* up front (to find the
+    # runs.tsv for outcome context); main() will re-parse fully.
+    record_dir: Path | None = None
+    for i, a in enumerate(argv):
+        if a == "--record" and i + 1 < len(argv):
+            record_dir = Path(argv[i + 1])
+            break
+        if a.startswith("--record="):
+            record_dir = Path(a.split("=", 1)[1])
+            break
+
+    failure_kind: str | None = None
+    fingerprint: str | None = None
+    exception_info: tuple[type, BaseException, Any] | None = None
+    runs_row: dict[str, str] | None = None
+
+    try:
+        rc = main()
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        exc_type, exc_val, exc_tb = sys.exc_info()
+        # Top frame = innermost call where the crash happened — the most
+        # discriminating signature for "is this the same bug".
+        import traceback as _tb
+        frames = _tb.extract_tb(exc_tb)
+        top = frames[-1] if frames else None
+        top_sig = f"{top.filename}:{top.lineno}:{top.name}" if top else "<no-frame>"
+        failure_kind = "crash"
+        fingerprint = _supervisor_fingerprint(
+            kind="crash",
+            exception_type=exc_type.__name__ if exc_type else "Unknown",
+            traceback_frame=top_sig,
+        )
+        exception_info = (exc_type, exc_val, exc_tb)
+        rc = 2
+        stamp(
+            f"{RED}[supervisor] uncaught {exc_type.__name__ if exc_type else '?'}: "
+            f"{exc_val}{RESET}"
+        )
+    else:
+        if rc == 0:
+            _supervisor_clear_state()
+            return 0
+        last = _supervisor_last_outcome(record_dir)
+        if last is not None:
+            tag, row = last
+            if tag in _SUPERVISE_OUTCOMES or tag in _SUPERVISE_PLAYBOOK_TAGS:
+                failure_kind = "abort"
+                fingerprint = _supervisor_fingerprint(
+                    kind="abort",
+                    outcome_tag=tag,
+                    gap_label=row.get("gap_label"),
+                )
+                runs_row = row
+
+    if failure_kind is None or fingerprint is None:
+        # Either a structural abort (abort_no_progress) we don't supervise,
+        # or some other non-recoverable rc. Pass through.
+        return rc
+
+    should_relaunch = _supervisor_dispatch(
+        argv=argv,
+        failure_kind=failure_kind,
+        fingerprint=fingerprint,
+        exception_info=exception_info,
+        runs_row=runs_row,
+        record_dir=record_dir,
+    )
+    if not should_relaunch:
+        return rc
+
+    # Replace this process with a fresh one. Module-level imports
+    # (grammar, lowerer, etc.) are re-loaded so the repair takes effect.
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_entry_with_supervision())
