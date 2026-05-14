@@ -1360,6 +1360,12 @@ class CardTransformer(Transformer):
             return BeingStatement(rhs=items[0])
         return BeingStatement(lhs=items[0], rhs=items[1])
 
+    def hasmixedstatement(self, items):
+        non_token = [it for it in items if not isinstance(it, Token)]
+        if len(non_token) == 2:
+            return BeingStatement(rhs=non_token[1])
+        return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
+
     def isstatement(self, items):
         # `<subject> is/was/are [each] [still|not] <rhs>` -> BeingStatement.
         # The grammar tags this rule with `!`, so the is/was/are/each/still/not
