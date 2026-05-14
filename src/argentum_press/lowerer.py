@@ -161,6 +161,20 @@ def _trigger_kotlin_name(condition: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+_CARDINAL_WORDS: dict[str, int] = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+
 def _number_int(node: Any) -> int | str:
     """Extract a plain int from a NumberValue literal.
 
@@ -176,6 +190,10 @@ def _number_int(node: Any) -> int | str:
         return value
     if isinstance(value, str) and node.ntype is ast.NumberTypeEnum.CUSTOM:
         return value
+    if isinstance(value, str) and node.ntype is ast.NumberTypeEnum.CARDINAL:
+        mapped = _CARDINAL_WORDS.get(value.strip().lower())
+        if mapped is not None:
+            return mapped
     raise EmitterGap(node)
 
 
