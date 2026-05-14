@@ -133,7 +133,7 @@ def getGrammar():
         duringstatement:  statement "during" timeexpression
         | statement "only" "during" timeexpression -> exclusiveduringstatement
 
-        exceptstatement:  statement "except" (("by"|"for") genericdeclarationexpression | statement)
+        exceptstatement:  statement ","? "except" (("by"|"for") genericdeclarationexpression | statement)
 
         ratherstatement:  statement "rather" "than" statement
 
