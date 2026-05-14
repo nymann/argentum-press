@@ -856,7 +856,7 @@ def getGrammar():
         ABILITYMODIFIER: "triggered" | "activated" | "mana" | "loyalty"
         COMBATSTATUSMODIFIER: "attacking" | "defending" | "attacked" | "blocking" | "blocked" | "active"
         KEYWORDSTATUSMODIFIER: "paired" | "kicked" | "face-up" | "face-down" | "transformed" | "enchanted" | "equipped"
-        | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" | "modified" // TODO: ensure 'suspected' works properly
+        | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" | "modified" | "different" // TODO: ensure 'suspected' works properly
         TAPPEDSTATUSMODIFIER: "tapped" | "untapped"
         EFFECTSTATUSMODIFIER: "named" | "chosen" | "chosen at random" | "revealed" | "returned" | "destroyed" | "exiled" | "died" | "countered" | "sacrificed"
         | "the target of a spell or ability" | "prevented" | "created" | "cast"
@@ -884,11 +884,12 @@ def getGrammar():
         PLAYERCHARACTERISTIC: "maximum hand size" | "life total"["s"] | "life" | "cards in hand"
         # OBJECTCHARACTERISTIC: "card"? "name" | "mana cost" | "converted mana cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         # | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
-        OBJECTCHARACTERISTIC: "card"? "name" | "mana value" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
+        OBJECTCHARACTERISTIC: "card"? "name"["s"] | "mana value" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
 
         //[TODO: Not quite done, there are expressions like 'a number of cards equal to [...]'. There's some overlapping responsibilities with descriptions involving cards, maybe.]
         !cardexpression: possessiveterm? ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? ("or" valueterm)? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?
+        | possessiveterm? (valueterm | thatmanyexpression | "a")? "card"["s"] "with" "different" "names" ("of" zonedeclarationexpression)? -> cardexpressionwithdifferentnames
 
         zonedeclarationexpression: (declarationdecorator* | referencedecorator*) zone
         | "the" ("top" | "bottom") "of" zonedeclarationexpression -> topbottomofzonedecl
