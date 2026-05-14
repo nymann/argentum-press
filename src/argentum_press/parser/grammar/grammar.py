@@ -580,6 +580,7 @@ def getGrammar():
         getsptexpression: declarationorreference? "get"["s"] ptchangeexpression
         diesexpression: declarationorreference? "die"["s"] timeexpression?
         gainabilityexpression: declarationorreference? "gain"["s"]  abilitysequencestatement
+        | declarationorreference? "gain"["s"] "\\"" statementblock "\\"" "."? "\\""?
         loseabilityexpression: declarationorreference? "lose"["s"] abilitysequencestatement
         lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression)
         takeextraturnexpression: playerdeclref? "take"["s"] timeexpression
