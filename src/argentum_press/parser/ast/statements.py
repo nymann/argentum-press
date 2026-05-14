@@ -310,3 +310,11 @@ class ManaRetentionStatement(Statement):
     """``you do not lose unspent red mana as steps and phases end`` — prevents unspent red mana from emptying at phase/step boundaries."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class DoStatement(Statement):
+    """`<subject> does <body>` — an explicit positive action statement, pairing an optional subject with an optional effect body."""
+
+    subject: Expression | None = None
+    body: Statement | None = None
