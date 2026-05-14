@@ -1245,6 +1245,11 @@ class CardTransformer(Transformer):
         # downstream meaning, mirroring `characteristicterm` above.
         return items[-1]
 
+    def characteristicthereference(self, items):
+        # `"the" characteristicterm` — "the" is a surface-only marker; only
+        # the characteristic carries downstream meaning.
+        return items[-1]
+
     def characteristic(self, items):
         # OBJECTCHARACTERISTIC | PLAYERCHARACTERISTIC token — pass through
         # as an opaque Name (same shape as modifier/qualifier).
