@@ -87,6 +87,11 @@ def _find_trigger_marker(node: Any) -> str:
     """
     if isinstance(node, ast.Name):
         return node.name.strip().lower()
+    if isinstance(node, str):
+        # lark.Token leaves (e.g. STEP token with value 'upkeep') reach
+        # here when a DescriptionExpression descriptor is a raw terminal
+        # rather than wrapped in a Name. Token is a str subclass.
+        return node.strip().lower()
     if isinstance(node, ast.ExpressionStatement):
         return _find_trigger_marker(node.root)
     if isinstance(node, ast.ChangeZoneExpression):
