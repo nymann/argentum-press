@@ -702,6 +702,14 @@ class KotlinLowerer:
             return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AsStatement):
             return self._effects_from_statement(stmt.consequence)
+        if isinstance(stmt, ast.CostIncreaseStatement):
+            # "<spells> cost {X} more to cast" — the rich AST carries the
+            # subject as a surface descriptor and the amount as a ManaExpression;
+            # argentum-engine has no top-level cost-increase Effect surface yet
+            # (only the PlayWithCostIncreaseComponent attached to other effects),
+            # so emit a stub so the gap moves past CostIncreaseStatement to
+            # whatever the next unhandled node is.
+            return ("Effects.CostIncrease()",)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
