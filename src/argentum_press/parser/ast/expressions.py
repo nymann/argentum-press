@@ -584,3 +584,10 @@ class ConniveExpression(EffectExpression):
     """
 
     subject: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RandomOrderPlacement(Expression):
+    """Marker for ``in a random order`` zone-placement modifier."""
+
+    pass
