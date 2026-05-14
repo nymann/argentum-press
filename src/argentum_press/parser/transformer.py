@@ -188,6 +188,7 @@ from argentum_press.parser.ast import (
     TransfigureAbility,
     TransmuteAbility,
     TributeAbility,
+    TriggerRestrictionStatement,
     TriggeredAbility,
     TypeExpression,
     UncastExpression,
@@ -1377,6 +1378,21 @@ class CardTransformer(Transformer):
         # `"activate" "only" "as" "a" "sorcery"` — grammar has a single form,
         # all keywords, no children. Return a bare marker.
         return ActivationRestrictionStatement()
+
+    def triggerrestrictionstatement(self, items):
+        # `declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?`.
+        # Literal "trigger"/"only" are dropped; the NumberValue (valuefrequency) is
+        # always present and splits the optional subject from the optional time.
+        freq_idx = next(
+            (i for i, it in enumerate(items) if isinstance(it, NumberValue)), None
+        )
+        if freq_idx is None:
+            raise LoweringIncomplete("triggerrestriction-without-frequency")
+        subject = items[0] if freq_idx == 1 else None
+        time = items[freq_idx + 1] if freq_idx + 1 < len(items) else None
+        return TriggerRestrictionStatement(
+            frequency=items[freq_idx], subject=subject, time=time
+        )
 
     def abilitysequencestatement(self, items):
         # `flying`, `flying and haste`, `flying, vigilance, and trample`.

@@ -236,6 +236,15 @@ class ActivationRestrictionStatement(Statement):
 
 
 @dataclass(frozen=True, slots=True)
+class TriggerRestrictionStatement(Statement):
+    """``This ability triggers only once each turn`` — caps trigger frequency."""
+
+    frequency: Expression
+    subject: Expression | None = None
+    time: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AbilitySequenceStatement(Statement):
     """``flying and haste``-style sequence used in token descriptions."""
 
