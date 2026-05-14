@@ -713,3 +713,10 @@ class AbleExpression(Expression):
 
     reference: Expression | None = None
     condition: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OtherThanExpression(Expression):
+    """`other than <reference>` — excludes a specific declaration or reference from a set or effect."""
+
+    reference: Expression | None = None
