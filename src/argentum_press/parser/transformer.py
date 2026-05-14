@@ -1596,6 +1596,11 @@ class CardTransformer(Transformer):
         # and player are dropped until a card needs them.
         return GainLoseExpression(subject=None)
 
+    def gainabilityexpression(self, items):
+        # declarationorreference? "gain"["s"] abilitysequencestatement
+        # Mirrors gainlifeexpression's surface-only stub.
+        return GainLoseExpression(subject=None)
+
     def chooseexpression(self, items):
         # playerdeclref? ("choose"["s"]|"chose") declarationorreference
         #   ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression?
