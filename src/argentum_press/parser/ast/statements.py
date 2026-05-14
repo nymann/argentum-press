@@ -217,6 +217,11 @@ class ActivationStatement(Statement):
 
 
 @dataclass(frozen=True, slots=True)
+class ActivationRestrictionStatement(Statement):
+    """``Activate only as a sorcery`` — sole form the grammar admits today."""
+
+
+@dataclass(frozen=True, slots=True)
 class AbilitySequenceStatement(Statement):
     """``flying and haste``-style sequence used in token descriptions."""
 

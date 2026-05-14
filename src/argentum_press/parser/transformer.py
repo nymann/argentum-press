@@ -44,6 +44,7 @@ from lark.exceptions import LarkError, UnexpectedInput
 from argentum_press.parser.ast import (
     AbilitySequenceStatement,
     AbsorbAbility,
+    ActivationRestrictionStatement,
     AddRemoveExpression,
     AffinityAbility,
     AfflictAbility,
@@ -1238,6 +1239,11 @@ class CardTransformer(Transformer):
 
     def thenstatement(self, items):
         return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
+
+    def activationrestrictionstatement(self, items):
+        # `"activate" "only" "as" "a" "sorcery"` — grammar has a single form,
+        # all keywords, no children. Return a bare marker.
+        return ActivationRestrictionStatement()
 
     def abilitysequencestatement(self, items):
         # `flying`, `flying and haste`, `flying, vigilance, and trample`.

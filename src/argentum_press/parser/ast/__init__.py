@@ -225,6 +225,7 @@ from argentum_press.parser.ast.references import (
 )
 from argentum_press.parser.ast.statements import (
     AbilitySequenceStatement,
+    ActivationRestrictionStatement,
     ActivationStatement,
     AsLongAsStatement,
     AsStatement,
@@ -262,6 +263,7 @@ __all__ = [
     "AbilityWord",
     "AbsorbAbility",
     "ActivatedAbility",
+    "ActivationRestrictionStatement",
     "ActivationStatement",
     "AddManaExpression",
     "AddRemoveExpression",
