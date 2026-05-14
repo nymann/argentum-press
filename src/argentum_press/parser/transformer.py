@@ -75,6 +75,7 @@ from argentum_press.parser.ast import (
     ColorExpression,
     CompoundStatement,
     CompoundTerminator,
+    ConniveExpression,
     ControlExpression,
     CopyExpression,
     CostIncreaseStatement,
@@ -1683,6 +1684,12 @@ class CardTransformer(Transformer):
     def surveilexpression(self, items):
         # "surveil" valueexpression
         return SurveilExpression(caliber=items[0])
+
+    def conniveexpression(self, items):
+        # declarationorreference? "connive"["s"] valueexpression?
+        # Surface-only stub mirroring gainlifeexpression: subject and amount
+        # are dropped until a card needs them.
+        return ConniveExpression(subject=None)
 
     def gainlifeexpression(self, items):
         # playerdeclref? "gain"["s"] (valueexpression? "life" | "life" valueexpression)

@@ -556,3 +556,15 @@ class SurveilExpression(EffectExpression):
     """``surveil <caliber>`` as a player-action effect (not the keyword ability)."""
 
     caliber: Expression
+
+
+@dataclass(frozen=True, slots=True)
+class ConniveExpression(EffectExpression):
+    """``<player>? connive[s] <value>?`` — draw a card, then discard a card;
+    +1/+1 counter per nonland discarded.
+
+    Surface-only stub mirroring [[GainLoseExpression]]: subject (the conniver)
+    and amount are dropped until a card needs them.
+    """
+
+    subject: Expression | None = None
