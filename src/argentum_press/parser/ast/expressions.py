@@ -232,6 +232,15 @@ class TypeExpression(Expression):
     comma_delimited: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class InAdditionToTypesExpression(Expression):
+    """Marker for ``in addition to its other type(s)`` trailing an ``isstatement``.
+
+    Flags a type-granting BeingStatement as additive (the subject keeps its
+    existing types) rather than replacing.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Control expression
 # ---------------------------------------------------------------------------
