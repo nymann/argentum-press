@@ -33,8 +33,8 @@ from typing import Any
 from . import existing
 from .classify import Bucket1, Bucket2, classify
 from .lowerer import KotlinLowerer
+from .parse_cache import cached_parse
 from .parser import ParseErrorDetails, ast as ast_module
-from .parser import parse
 from .template import is_basic_land
 
 
@@ -107,8 +107,12 @@ def inspect_card(
     Skips no triage — the caller decides whether to apply
     ``existing.implemented_cards_in_set`` / ``is_basic_land`` filters before
     calling this.
+
+    Routes through :func:`argentum_press.parse_cache.cached_parse`, which is a
+    transparent passthrough to :func:`argentum_press.parser.parse` unless the
+    caller opts into disk caching via ``ARGENTUM_PARSE_CACHE=1``.
     """
-    result = parse(card)
+    result = cached_parse(card)
     if not result.ok:
         assert result.error is not None
         return (

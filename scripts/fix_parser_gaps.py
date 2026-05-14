@@ -41,6 +41,14 @@ TRANSFORMER = REPO / "src/argentum_press/parser/transformer.py"
 LOWERER = REPO / "src/argentum_press/lowerer.py"
 AST_DIR = REPO / "src/argentum_press/parser/ast"
 
+# Opt into the disk parse cache for the whole orchestrator process (and any
+# subprocesses we spawn that inherit env). Each card costs 1-40s through the
+# Earley parser; re-scanning ~170 candidates per iteration is the wall-clock
+# pain. The cache turns iteration N>1 (or a restart of iteration 1) into
+# microseconds for unchanged cards. Invalidation happens label-by-label after
+# each successful parse-kind fix; see argentum_press.parse_cache.
+os.environ.setdefault("ARGENTUM_PARSE_CACHE", "1")
+
 PYTEST_TARGETS = (
     "tests/test_diagnose.py",
     "tests/test_pipeline.py",
@@ -211,12 +219,12 @@ def grammar_rule_uses(rule: str, limit: int = 20) -> str | None:
 def parse_error_block(card_name: str, oracle_text: str) -> str | None:
     """Render the structured Lark error for a parse-error gap.
 
-    Re-runs ``parse()`` to get :class:`ParseErrorDetails` directly. Cheap -
-    one card parse vs the full set walk that already ran upstream.
+    Routes through the disk parse cache so this re-parse is a microsecond
+    cache hit when the scan that surfaced this gap already wrote the entry.
     """
-    from argentum_press.parser import parse
+    from argentum_press.parse_cache import cached_parse
 
-    r = parse({"name": card_name, "oracle_text": oracle_text})
+    r = cached_parse({"name": card_name, "oracle_text": oracle_text})
     if r.error is None or r.error.details is None:
         return None
     d = r.error.details
@@ -769,6 +777,16 @@ def main() -> int:
                 card=gap.card_name,
                 summary=summary,
             )
+
+        # Cache invalidation: parse-kind fixes change what the parser produces
+        # for cards previously labeled with this gap, so drop those entries.
+        # Lower-kind fixes don't change parse output (the AST is unchanged);
+        # classify runs fresh each iteration and picks up the new lowerer
+        # naturally, so the parse cache stays valid.
+        if gap.kind == "parse":
+            from argentum_press.parse_cache import invalidate_label
+            removed = invalidate_label(gap.label)
+            stamp(f"{DIM}parse-cache: invalidated {removed} entr(ies) for '{gap.label}'{RESET}")
 
         prev_label = gap.label
 

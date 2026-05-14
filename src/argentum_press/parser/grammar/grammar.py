@@ -23,7 +23,7 @@ def getGrammar():
 
         statement: compoundstatement
         | expressionstatement
-        | conditionalstatement 
+        | conditionalstatement
         | activationstatement
         | beingstatement
         | dostatement
@@ -33,6 +33,9 @@ def getGrammar():
         | wouldstatement
         | additionalcoststatement
         | modalstatement
+        | activationrestrictionstatement
+
+        activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
 
         thenstatement: "then" statement
         insteadstatement: statement "instead"
@@ -507,6 +510,7 @@ def getGrammar():
         | putinzoneexpression
         | putcounterexpression
         | removecounterexpression
+        | movecounterexpression
         | spendmanaexpression
         | paylifeexpression
         | addmanaexpression
@@ -553,6 +557,7 @@ def getGrammar():
         putinzoneexpression: playerdeclref? "put"["s"] (declarationorreference | cardexpression) (locationexpression | "back" | zoneplacementmodifier) (objectdefinition | playerdefinition | zoneplacementmodifier)?
         putcounterexpression: playerdeclref? "put"["s"] ("a"|valueexpression) countertype "counter"["s"] "on" declarationorreference
         removecounterexpression: playerdeclref? "remove"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference
+        movecounterexpression: playerdeclref? "move"["s"] ("a"|valueexpression) countertype "counter"["s"] "from" declarationorreference ("onto" | "to") declarationorreference
         spendmanaexpression: "spend" "mana" //[TODO: this is just a stub]
         paylifeexpression: playerdeclref? "pay"["s"] valueexpression? "life"
         addmanaexpression: playerdeclref? "add"["s"] manadeclref
