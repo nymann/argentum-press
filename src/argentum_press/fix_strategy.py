@@ -174,6 +174,7 @@ class LowerPlaybookFixer(GapFixer):
             ctx.rec.tool_counts = {}
 
         if not result.outcome.startswith("applied"):
+            self._dump_trace(result, ctx, gap.label)
             return FixOutcome(
                 rc=2,
                 summary=f"playbook outcome={result.outcome}",
@@ -183,6 +184,46 @@ class LowerPlaybookFixer(GapFixer):
         import json
         summary = json.dumps(result.final_plan, indent=2) if result.final_plan else ""
         return FixOutcome(rc=0, summary=summary, outcome_tag="pass")
+
+    def _dump_trace(self, result: Any, ctx: IterationContext, label: str) -> None:
+        """On playbook abort, drop a trace JSON next to the recorder and print
+        the failing step's error to stderr.
+
+        The standalone ``run_playbook_lower.py`` CLI accepts ``--trace-out``;
+        when the playbook runs as a strategy inside the fix-loop there's no
+        equivalent hook, and the in-memory steps evaporate. That made the
+        first race iteration's L4 failure invisible from the pane output —
+        a real diagnostic bug. We now always persist the trace on abort.
+        """
+        import json
+        import sys
+        # Print the last step's error so the failure mode is visible in the
+        # pane without opening the trace file.
+        last = result.steps[-1] if getattr(result, "steps", None) else None
+        if last and isinstance(last.payload, dict) and "error" in last.payload:
+            self._say(f"playbook {result.outcome} on {last.name}: {last.payload['error']}")
+
+        # Pick a trace location. If --record is set we sit it alongside the
+        # other run artifacts. Otherwise fall back to experiments/playbook-traces/.
+        from pathlib import Path
+        slug = label.split(".")[-1].lower() or "abort"
+        ts = ""
+        rec = ctx.rec
+        if rec is not None and getattr(rec, "started_at", None):
+            ts = f"{rec.started_at}-"
+        out_root: Path | None = None
+        recorder = ctx.recorder
+        if recorder is not None and getattr(recorder, "record_dir", None):
+            out_root = recorder.record_dir
+        if out_root is None:
+            out_root = Path.cwd() / "experiments" / "playbook-traces"
+        out_root.mkdir(parents=True, exist_ok=True)
+        out_path = out_root / f"{ts}{slug}-{result.outcome}.json"
+        try:
+            out_path.write_text(result.as_json(), encoding="utf-8")
+            print(f"  playbook trace written to {out_path}", file=sys.stderr)
+        except OSError as e:
+            print(f"  failed to write playbook trace: {e}", file=sys.stderr)
 
 
 __all__ = [

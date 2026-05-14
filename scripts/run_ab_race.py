@@ -127,6 +127,21 @@ def main(argv: list[str] | None = None) -> int:
         help="tmux session name (default: argentum-race). An existing session "
              "with this name will be killed and recreated.",
     )
+    ap.add_argument(
+        "--freeform-profile", type=Path, default=None,
+        help="Claude Code profile dir for the freeform pane (sets "
+             "CLAUDE_CONFIG_DIR=<dir> for that pane). Populate the dir first "
+             "via scripts/setup_claude_profile.py. If unset, freeform inherits "
+             "whatever's in your keychain.",
+    )
+    ap.add_argument(
+        "--playbook-profile", type=Path, default=None,
+        help="Claude Code profile dir for the playbook pane (sets "
+             "CLAUDE_CONFIG_DIR=<dir> for that pane). Use a different "
+             "subscription than --freeform-profile so the two panes don't "
+             "contend for quota and 429 each other. Populate via "
+             "scripts/setup_claude_profile.py.",
+    )
     args = ap.parse_args(argv)
 
     dirty = _git("status", "--porcelain").stdout
@@ -167,25 +182,37 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"  {path}: no cache seeded")
 
-    cmd_template = (
-        "cd {path} && "
-        "ARGENTUM_PARSE_CACHE=1 "
-        "ARGENTUM_PARSE_CACHE_DIR={path}/.parse-cache "
-        "uv run scripts/fix_parser_gaps.py "
-        "{set_code} {engine} "
-        "--mode {mode} "
-        "--record experiments/runs/race/"
-    )
+    def _build_cmd(path: Path, mode: str, profile: Path | None) -> str:
+        # CLAUDE_CONFIG_DIR is set before the run command rather than via
+        # `tmux send-keys`-with-env so the var is scoped to this shell line
+        # only. Both claude -p (freeform) and the playbook's SDK call honour
+        # it (the latter via _read_oauth_token_from_profile in llm.py).
+        prefix = (
+            f"CLAUDE_CONFIG_DIR={profile} " if profile is not None else ""
+        )
+        return (
+            f"cd {path} && "
+            f"{prefix}"
+            f"ARGENTUM_PARSE_CACHE=1 "
+            f"ARGENTUM_PARSE_CACHE_DIR={path}/.parse-cache "
+            f"uv run scripts/fix_parser_gaps.py "
+            f"{args.set_code} {engine_abs} "
+            f"--mode {mode} "
+            f"--record experiments/runs/race/"
+        )
+
     freeform_path = args.worktree_base / "race-freeform"
     playbook_path = args.worktree_base / "race-playbook"
-    freeform_cmd = cmd_template.format(
-        path=freeform_path, set_code=args.set_code,
-        engine=engine_abs, mode="freeform",
-    )
-    playbook_cmd = cmd_template.format(
-        path=playbook_path, set_code=args.set_code,
-        engine=engine_abs, mode="playbook",
-    )
+    freeform_cmd = _build_cmd(freeform_path, "freeform", args.freeform_profile)
+    playbook_cmd = _build_cmd(playbook_path, "playbook", args.playbook_profile)
+
+    if args.freeform_profile is None or args.playbook_profile is None:
+        print(
+            "warning: both panes will share whatever auth is in your keychain. "
+            "Expect 429 contention on the playbook side. "
+            "Use --freeform-profile + --playbook-profile to split.",
+            file=sys.stderr,
+        )
 
     _spawn_panes(args.session, freeform_cmd, playbook_cmd)
 

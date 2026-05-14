@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 import jsonschema
@@ -137,15 +138,21 @@ _CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
 
 
 def _create_with_backoff(
-    client: ClientLike, *, _max_retries: int = 4, _base_delay: float = 4.0, **kwargs: Any
+    client: ClientLike, *, _max_retries: int = 8, _base_delay: float = 4.0, **kwargs: Any
 ) -> Any:
     """Wrap ``client.messages.create`` with exponential backoff on 429.
 
     The subscription auth path frequently 429s when another Claude session
-    is consuming quota concurrently. We retry up to ``_max_retries`` times
-    with delays ``[4, 8, 16, 32]`` seconds. Anything else (auth, 500, etc.)
-    propagates immediately.
+    is consuming quota concurrently (e.g. the A/B race runs both freeform
+    ``claude -p`` and the playbook SDK calls against the same subscription
+    pool). We retry up to ``_max_retries`` times with delays
+    ``[4, 8, 16, 32, 64, 90, 90, 90]`` seconds plus random jitter, ~6
+    minutes of total grace. If the contending session is freeform's claude
+    loop it eventually pauses for pytest, which is when our retry lands.
+
+    Anything else (auth, 500, etc.) propagates immediately.
     """
+    import random
     import time
     delay = _base_delay
     for attempt in range(_max_retries):
@@ -156,9 +163,11 @@ def _create_with_backoff(
             is_429 = ("429" in msg or "rate_limit" in msg) and attempt < _max_retries - 1
             if not is_429:
                 raise
-            time.sleep(delay)
+            # Cap individual sleeps at 90s; small jitter so concurrent retries
+            # don't synchronise.
+            sleep_for = min(delay, 90.0) + random.uniform(0, 2.0)
+            time.sleep(sleep_for)
             delay *= 2
-    # Unreachable — the loop either returns or re-raises.
     raise RuntimeError("playbook: backoff loop exhausted")
 
 
@@ -191,18 +200,51 @@ def _read_oauth_token_from_keychain() -> str | None:
     return tok if isinstance(tok, str) and tok else None
 
 
+def _read_oauth_token_from_profile(profile_dir: Path) -> str | None:
+    """Pull the OAuth bearer token from a Claude Code profile directory.
+
+    ``CLAUDE_CONFIG_DIR`` is Claude Code's standard mechanism for running
+    multiple accounts side-by-side: each profile lives at e.g.
+    ``~/.claude-A/`` and stores its OAuth credentials in
+    ``credentials.json`` (same shape as the keychain JSON). The A/B race
+    populates these via ``scripts/setup_claude_profile.py``.
+    """
+    import json
+    creds_path = profile_dir / "credentials.json"
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tok = data.get("claudeAiOauth", {}).get("accessToken")
+    return tok if isinstance(tok, str) and tok else None
+
+
 def _default_client() -> ClientLike:
     """Construct an Anthropic client lazily so import doesn't require the env.
 
-    Prefers ANTHROPIC_API_KEY when set; otherwise falls back to the Claude
-    Code OAuth access token in the macOS keychain. The OAuth path requires
-    the ``oauth-2025-04-20`` beta header.
+    Auth precedence:
+    1. ``ANTHROPIC_API_KEY`` → API-key mode (separate billing pool).
+    2. ``CLAUDE_CONFIG_DIR/credentials.json`` → OAuth bearer from a per-profile
+       credentials file. Lets the A/B race split auth across two Claude Code
+       subscriptions without keychain rotation; each pane sets
+       CLAUDE_CONFIG_DIR to a different directory.
+    3. Keychain ``Claude Code-credentials`` entry → OAuth bearer (the default
+       when only one account is in use).
+    The OAuth paths require the ``oauth-2025-04-20`` beta header.
     """
     import os
     from anthropic import Anthropic
 
     if os.environ.get("ANTHROPIC_API_KEY"):
         return Anthropic()
+    profile_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if profile_dir:
+        tok = _read_oauth_token_from_profile(Path(profile_dir))
+        if tok:
+            return Anthropic(
+                auth_token=tok,
+                default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            )
     token = _read_oauth_token_from_keychain()
     if token:
         return Anthropic(
