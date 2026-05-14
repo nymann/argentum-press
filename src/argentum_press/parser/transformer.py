@@ -1245,6 +1245,9 @@ class CardTransformer(Transformer):
         token = items[0]
         return Name(name=str(token))
 
+    def nonqualifier(self, items):
+        return NonExpression(operand=Name(name=str(items[0])))
+
     def characteristicexpression(self, items):
         return items[0]
 
