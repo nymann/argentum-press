@@ -669,3 +669,10 @@ class PayExpression(EffectExpression):
 
     player: Expression | None = None
     cost: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessExpression(EffectExpression):
+    """``harness <declarationorreference>`` — harness a permanent or reference, gaining control or use of it."""
+
+    target: Expression | None = None
