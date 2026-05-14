@@ -637,6 +637,20 @@ def _commit_subject(kind: str, label: str, card: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _purge_argentum_press_modules() -> None:
+    """Drop cached ``argentum_press.*`` modules so the next import re-reads
+    them from disk.
+
+    The agent edits parser/lowerer files between iterations. Python caches
+    the first-imported version in ``sys.modules``, so a plain re-import
+    silently returns the stale module and ``find_first_gap`` rediscovers
+    the gap the agent just fixed — tripping the same-label abort.
+    """
+    for name in list(sys.modules):
+        if name == "argentum_press" or name.startswith("argentum_press."):
+            del sys.modules[name]
+
+
 def _find_gap_with_ast(
     set_code: str, project_dir: Path
 ) -> tuple[Any, str | None]:
@@ -646,6 +660,7 @@ def _find_gap_with_ast(
     AST for the failing card (lower gaps only); None for parse gaps and
     when ``gap is None``.
     """
+    _purge_argentum_press_modules()
     from argentum_press.catalog import ScryfallCatalog
     from argentum_press.diagnose import find_first_gap, format_ast, inspect_card
     from argentum_press.lowerer import KotlinLowerer
