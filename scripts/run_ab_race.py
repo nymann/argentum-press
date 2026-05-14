@@ -311,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             f"uv run scripts/fix_parser_gaps.py "
             f"{args.set_code} {engine_abs} "
             f"--mode {mode} "
+            f"--no-push "
             f"--record experiments/runs/race/"
         )
 

@@ -1007,7 +1007,8 @@ def _render_event(ev: dict[str, Any]) -> str | None:
 
 
 def commit_iteration(
-    *, iteration: int, set_code: str, gap_kind: str, label: str, card: str, summary: str
+    *, iteration: int, set_code: str, gap_kind: str, label: str, card: str,
+    summary: str, push: bool = True,
 ) -> None:
     if not git_dirty():
         stamp(
@@ -1042,7 +1043,8 @@ def commit_iteration(
     body = "\n".join(body.splitlines()[:20])  # cap for sanity
     msg = f"{subject}\n\n{body}\n"
     subprocess.run(["git", "commit", "-m", msg], cwd=REPO, check=True)
-    _push_or_warn()
+    if push:
+        _push_or_warn()
 
 
 def _push_or_warn() -> None:
@@ -1524,6 +1526,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-iter", type=int, default=0, help="0 = unbounded")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-commit", action="store_true")
+    ap.add_argument(
+        "--no-push", action="store_true",
+        help="Don't try to push iteration commits to the remote. Use for "
+             "ephemeral worktrees (the A/B race) where the branch has no "
+             "upstream and pushing isn't meaningful.",
+    )
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument(
         "--record", type=Path, default=None,
@@ -1774,6 +1782,7 @@ def main(argv: list[str] | None = None) -> int:
                 label=gap.label,
                 card=gap.card_name,
                 summary=summary,
+                push=not args.no_push,
             )
 
         # Cache invalidation: parse-kind fixes change what the parser produces
