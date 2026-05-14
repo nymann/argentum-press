@@ -1892,6 +1892,9 @@ class CardTransformer(Transformer):
     def manasymbolexpression(self, items):
         return ManaExpression(symbols=tuple(items))
 
+    def puremanaexpression(self, items):
+        return items[0]
+
     def manasymbol(self, items):
         return items[0]
 
