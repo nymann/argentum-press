@@ -52,6 +52,7 @@ from argentum_press.parser.ast import (
     AndOrExpression,
     AnnihilatorAbility,
     AnyColorSpecifier,
+    AsStatement,
     AtStatement,
     AuraSwapAbility,
     AwakenAbility,
@@ -116,6 +117,7 @@ from argentum_press.parser.ast import (
     KickerAbility,
     LandwalkAbility,
     LevelUpAbility,
+    LookExpression,
     MadnessAbility,
     ManaExpression,
     MayStatement,
@@ -1263,6 +1265,10 @@ class CardTransformer(Transformer):
             consequence, conditional = items
         return WheneverStatement(conditional=conditional, consequence=consequence, inverted=True)
 
+    def asstatement(self, items):
+        # "as" statement "," statement — e.g. "As ~ enters, look at...".
+        return AsStatement(conditional=items[0], consequence=items[1], inverted=False)
+
     def atstatement(self, items):
         return AtStatement(conditional=items[0], consequence=items[1], inverted=False)
 
@@ -1417,6 +1423,11 @@ class CardTransformer(Transformer):
 
     def revealexpression(self, items):
         return RevealExpression()
+
+    def lookexpression(self, items):
+        # playerdeclref? ("look"["s"]|"looked") "at"
+        #   (declarationorreference | cardexpression | zonedeclarationexpression)
+        return LookExpression()
 
     def countertype(self, items):
         # `countertype: ptchangeexpression | WORD`. Pass the matched child

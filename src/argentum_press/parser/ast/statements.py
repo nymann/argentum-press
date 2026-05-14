@@ -148,6 +148,13 @@ class AsLongAsStatement(ConditionalStatement):
 
 
 @dataclass(frozen=True, slots=True)
+class AsStatement(ConditionalStatement):
+    conditional: Statement | Expression
+    consequence: Statement
+    inverted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class UntilStatement(ConditionalStatement):
     conditional: Statement | Expression
     consequence: Statement

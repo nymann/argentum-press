@@ -501,6 +501,11 @@ class RevealExpression(EffectExpression):
 
 
 @dataclass(frozen=True, slots=True)
+class LookExpression(EffectExpression):
+    """``<player> look[s|ed] at <subject>`` placeholder."""
+
+
+@dataclass(frozen=True, slots=True)
 class PreventDamageExpression(EffectExpression):
     """``prevent that damage`` / ``prevent all <damage> ...`` placeholder.
 
