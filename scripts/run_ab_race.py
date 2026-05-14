@@ -59,6 +59,71 @@ def _seed_cache(worktree: Path, cache_source: Path) -> int:
     return sum(1 for _ in dest.rglob("*") if _.is_file())
 
 
+def _harvest_cache(src: Path, dest: Path) -> int:
+    """Copy files from ``src`` into ``dest``, leaving existing destination
+    files untouched.
+
+    The parse cache is sharded under two-char prefix dirs (``ab/cdef.json``);
+    each file is independently keyed by the sha256 of (card name, oracle
+    text). Multiple worktrees can add new entries to the shared cache without
+    clobbering each other — same key always means same parse result, so
+    no overwrite is needed. Returns the count of new files copied.
+    """
+    if not src.is_dir():
+        return 0
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for src_file in src.rglob("*"):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(src)
+        target = dest / rel
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, target)
+        n += 1
+    return n
+
+
+def _branch_exists(branch: str) -> bool:
+    r = _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False, capture=True)
+    return r.returncode == 0
+
+
+def _commits_ahead(branch: str, base: str = "main") -> int:
+    r = _git("rev-list", "--count", f"{base}..{branch}", check=False)
+    if r.returncode != 0:
+        return 0
+    try:
+        return int(r.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def _try_merge(branch: str, message: str) -> bool:
+    """Merge ``branch`` into the current branch with --no-ff. On conflict,
+    abort the merge cleanly and return False — the script will skip cleanup
+    of that branch so the user can resolve manually."""
+    r = subprocess.run(
+        ["git", "merge", "--no-ff", branch, "-m", message],
+        cwd=REPO, capture_output=True, text=True, check=False,
+    )
+    if r.returncode != 0:
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            cwd=REPO, check=False, capture_output=True,
+        )
+        snippet = (r.stdout + r.stderr).strip()[-600:]
+        print(
+            f"  merge of {branch} FAILED; aborted, branch left in place "
+            f"for manual handling:\n{snippet}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def _have_session(name: str) -> bool:
     r = subprocess.run(
         ["tmux", "has-session", "-t", name],
@@ -172,9 +237,43 @@ def main(argv: list[str] | None = None) -> int:
         ("race-freeform", "freeform"),
         ("race-playbook", "playbook"),
     ]
+
+    # ---- Teardown of any prior race state -------------------------------
+    # Harvest each worktree's parse cache back into the shared cache *before*
+    # destroying the worktree (the freeform pane often builds up tens of
+    # fresh parses we don't want to throw away — re-running the race without
+    # this loses real progress and the next loop re-pays the slow Earley
+    # cost). Then merge commits ahead of main back to main so the fixes
+    # land, then delete the worktrees + branches.
     for branch, _mode in plan:
         path = args.worktree_base / branch
+        if path.exists():
+            harvested = _harvest_cache(path / ".parse-cache", cache_source)
+            if harvested:
+                print(f"  {path}: harvested {harvested} cache files into {cache_source}")
+        if _branch_exists(branch):
+            ahead = _commits_ahead(branch)
+            if ahead > 0:
+                merged = _try_merge(
+                    branch,
+                    f"Merge {branch}: {ahead} commits from prior A/B race",
+                )
+                if merged:
+                    print(f"  merged {branch} ({ahead} commits) → main")
+                else:
+                    # Bail on cleanup so the branch stays around for manual
+                    # resolution. The user can re-run the script after.
+                    return 2
         _remove_worktree(path, branch)
+
+    # Re-read main_head after the merges so fresh worktrees are based on
+    # the now-updated main (with the merged race output).
+    main_head = _git("rev-parse", "HEAD").stdout.strip()
+
+    # ---- Fresh worktrees ------------------------------------------------
+    cache_ok = cache_source.is_dir() and any(cache_source.iterdir())
+    for branch, _mode in plan:
+        path = args.worktree_base / branch
         _create_worktree(path, branch, main_head)
         if cache_ok:
             n = _seed_cache(path, cache_source)
