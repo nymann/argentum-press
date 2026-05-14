@@ -721,6 +721,14 @@ class KotlinLowerer:
             # generate it (see the ActivatedAbility @ability handler, which
             # also gaps). Emit a stub so the gap moves past ActivationStatement.
             return ("Effects.Activate()",)
+        if isinstance(stmt, ast.ModalExpression):
+            # "choose one — • <option1> • <option2>" — the rich AST carries
+            # each modal option as a ModalChoice with its own block, and the
+            # number of choices as a NumberValue. argentum-engine's
+            # ChooseModeDecision / BudgetModalDecision surfaces would need a
+            # multi-effect API to consume this; emit a stub so the gap moves
+            # past ModalExpression to whatever the next unhandled node is.
+            return ("Effects.Modal()",)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
