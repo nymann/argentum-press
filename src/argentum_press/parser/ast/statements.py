@@ -287,3 +287,11 @@ class WhereStatement(Statement):
 
     body: Statement | None = None
     definition: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UnlessStatement(Statement):
+    """``<body> unless <condition>`` — the body statement applies except when the condition statement holds."""
+
+    body: Statement | None = None
+    condition: Statement | None = None
