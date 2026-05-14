@@ -153,6 +153,12 @@ def _classify_type_operand(node: Any) -> str:
         return "unknown"
     if isinstance(node, ast.GenericDeclarationExpression):
         return _classify_type_operand(node.definition)
+    if isinstance(node, ast.OrExpression):
+        for side in (node.lhs, node.rhs):
+            kind = _classify_type_operand(side)
+            if kind != "unknown":
+                return kind
+        return "unknown"
     return "unknown"
 
 
