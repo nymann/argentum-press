@@ -12,7 +12,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from argentum_press.diagnose import DiagnoseReport, find_first_gap, gap_for_card
+from argentum_press.diagnose import (
+    DiagnoseReport,
+    find_first_gap,
+    format_ast,
+    gap_for_card,
+    inspect_card,
+)
 from argentum_press.lowerer import KotlinLowerer
 
 
@@ -136,6 +142,48 @@ def test_gap_for_card_returns_parse_gap_for_unparseable() -> None:
     assert gap is not None
     assert gap.kind == "parse"
     assert gap.card_name == "Unparseable Card"
+
+
+def test_inspect_card_returns_ast_alongside_gap() -> None:
+    # Clean card: gap is None, AST is populated.
+    gap, ast = inspect_card(_flying_bird(), KotlinLowerer())
+    assert gap is None
+    assert ast is not None
+    # Sanity: the returned AST is the rich Card dataclass, not a tree stub.
+    assert type(ast).__name__ == "Card"
+
+
+def test_inspect_card_returns_none_ast_on_parse_failure() -> None:
+    gap, ast = inspect_card(_unparseable(), KotlinLowerer())
+    assert gap is not None
+    assert gap.kind == "parse"
+    assert ast is None  # parse failed; no AST to return
+
+
+def test_format_ast_produces_depth_indented_output() -> None:
+    _, ast = inspect_card(_flying_bird(), KotlinLowerer())
+    assert ast is not None
+    text = format_ast(ast)
+    # The opening line should always be the Card class.
+    assert text.startswith("Card(")
+    # Multi-line output for non-trivial cards.
+    assert "\n" in text
+    # The depth-based formatter uses 2-space indents per level; the first
+    # field after the opening should be indented by exactly 2 spaces.
+    second_line = text.split("\n", 2)[1]
+    assert second_line.startswith("  ") and not second_line.startswith("    ")
+
+
+def test_diagnose_report_includes_ast_when_set() -> None:
+    report = DiagnoseReport(set_code="zzz", scanned=1, gap=None, ast="Card(...)")
+    payload = json.loads(report.to_json())
+    assert payload["ast"] == "Card(...)"
+
+
+def test_diagnose_report_omits_ast_when_unset() -> None:
+    report = DiagnoseReport(set_code="zzz", scanned=1, gap=None)
+    payload = json.loads(report.to_json())
+    assert "ast" not in payload  # field is omitted entirely, not set to null
 
 
 def test_gap_for_card_bypasses_triage_filters() -> None:

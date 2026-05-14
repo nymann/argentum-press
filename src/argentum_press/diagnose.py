@@ -25,13 +25,14 @@ actually unblock.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from . import existing
 from .classify import Bucket1, Bucket2, classify
 from .lowerer import KotlinLowerer
+from .parser import ast as ast_module
 from .parser import parse
 from .template import is_basic_land
 
@@ -67,49 +68,124 @@ class DiagnoseReport:
     """How many cards were tried before we hit a gap (or exhausted the set)."""
 
     gap: Gap | None
+    ast: str | None = None
+    """Pretty-printed AST repr. Only populated when the CLI's ``--ast`` flag
+    is set; ``None`` for the set-walk path (where dumping every card's AST
+    would balloon the JSON for no benefit). Multi-line — consumers pipe
+    through ``jq -r '.ast'`` to get readable output."""
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "set_code": self.set_code,
-                "scanned": self.scanned,
-                "gap": self.gap.to_json_dict() if self.gap is not None else None,
-            },
-            indent=2,
+        payload: dict[str, Any] = {
+            "set_code": self.set_code,
+            "scanned": self.scanned,
+            "gap": self.gap.to_json_dict() if self.gap is not None else None,
+        }
+        if self.ast is not None:
+            payload["ast"] = self.ast
+        return json.dumps(payload, indent=2)
+
+
+def inspect_card(
+    card: dict[str, Any], lowerer: KotlinLowerer
+) -> tuple[Gap | None, ast_module.Card | None]:
+    """Run parse + classify against one card, returning ``(gap, ast)``.
+
+    ``gap`` is None when the card is bucket-1 (parses and lowers cleanly).
+    ``ast`` is None only when parse itself failed; for lower-gaps the AST
+    is fully built and returned alongside the gap so callers can inspect
+    where in the tree the missing handler sits.
+
+    Skips no triage — the caller decides whether to apply
+    ``existing.implemented_cards_in_set`` / ``is_basic_land`` filters before
+    calling this.
+    """
+    result = parse(card)
+    if not result.ok:
+        assert result.error is not None
+        return (
+            Gap(
+                kind="parse",
+                card_name=card["name"],
+                oracle_text=card.get("oracle_text", "") or "",
+                label=result.error.message,
+            ),
+            None,
         )
+
+    assert result.ast is not None
+    match classify(result.ast, lowerer):
+        case Bucket1():
+            return (None, result.ast)
+        case Bucket2(missing_node=node):
+            return (
+                Gap(
+                    kind="lower",
+                    card_name=card["name"],
+                    oracle_text=card.get("oracle_text", "") or "",
+                    label=node,
+                ),
+                result.ast,
+            )
 
 
 def gap_for_card(card: dict[str, Any], lowerer: KotlinLowerer) -> Gap | None:
     """Run parse + classify against one card. Returns the Gap that surfaces, or
     None if the card is bucket-1 (parses and lowers cleanly).
 
-    Skips no triage — the caller decides whether to apply
-    ``existing.implemented_cards_in_set`` / ``is_basic_land`` filters before
-    calling this. Used both by :func:`find_first_gap` (inside its set walk)
-    and by the ``--card`` CLI flag (single-card reproduction for the
-    fix-loop).
+    Thin wrapper around :func:`inspect_card` for callers that don't need the
+    AST (e.g. the set walk in :func:`find_first_gap`).
     """
-    result = parse(card)
-    if not result.ok:
-        assert result.error is not None
-        return Gap(
-            kind="parse",
-            card_name=card["name"],
-            oracle_text=card.get("oracle_text", "") or "",
-            label=result.error.message,
-        )
+    gap, _ = inspect_card(card, lowerer)
+    return gap
 
-    assert result.ast is not None
-    match classify(result.ast, lowerer):
-        case Bucket1():
-            return None
-        case Bucket2(missing_node=node):
-            return Gap(
-                kind="lower",
-                card_name=card["name"],
-                oracle_text=card.get("oracle_text", "") or "",
-                label=node,
-            )
+
+def format_ast(card_ast: ast_module.Card) -> str:
+    """Pretty-print the AST for the ``--ast`` flag using depth-based
+    indentation. Standard ``pprint`` indents each field at the column where
+    its name appears, which balloons rapidly with deeply-nested dataclasses
+    (a ten-level-deep tree pushes content past column 200). This formatter
+    uses fixed two-space indents per depth level so output stays readable
+    regardless of nesting depth, and inlines shallow nodes that fit on one
+    line for compactness."""
+    return _format_node(card_ast, depth=0)
+
+
+_INLINE_BUDGET = 100
+
+
+def _format_node(node: Any, depth: int) -> str:
+    indent = "  " * depth
+    child_indent = "  " * (depth + 1)
+
+    if is_dataclass(node) and not isinstance(node, type):
+        cls = type(node).__name__
+        fs = fields(node)
+        if not fs:
+            return f"{cls}()"
+        inline = f"{cls}({', '.join(f'{f.name}={getattr(node, f.name)!r}' for f in fs)})"
+        if len(inline) <= _INLINE_BUDGET and "\n" not in inline:
+            return inline
+        lines = [f"{cls}("]
+        for f in fs:
+            rendered = _format_node(getattr(node, f.name), depth + 1)
+            lines.append(f"{child_indent}{f.name}={rendered},")
+        lines.append(f"{indent})")
+        return "\n".join(lines)
+
+    if isinstance(node, tuple):
+        if not node:
+            return "()"
+        comma = "," if len(node) == 1 else ""
+        inline = f"({', '.join(repr(v) for v in node)}{comma})"
+        if len(inline) <= _INLINE_BUDGET and "\n" not in inline:
+            return inline
+        lines = ["("]
+        for v in node:
+            lines.append(f"{child_indent}{_format_node(v, depth + 1)},")
+        lines.append(f"{indent})")
+        return "\n".join(lines)
+
+    return repr(node)
 
 
 def find_first_gap(
@@ -143,4 +219,11 @@ def find_first_gap(
     return DiagnoseReport(set_code=set_code, scanned=scanned, gap=None)
 
 
-__all__ = ["DiagnoseReport", "Gap", "find_first_gap", "gap_for_card"]
+__all__ = [
+    "DiagnoseReport",
+    "Gap",
+    "find_first_gap",
+    "format_ast",
+    "gap_for_card",
+    "inspect_card",
+]

@@ -116,6 +116,16 @@ def main(argv: list[str] | None = None) -> int:
         "reports the parse/lower outcome of this specific card. Useful for "
         "the fix-loop: after editing, confirm the gap label moved.",
     )
+    diag.add_argument(
+        "--ast",
+        action="store_true",
+        help="Include a pretty-printed AST of the parsed card in the JSON "
+        "output (as the top-level ``ast`` field). Multi-line — pipe through "
+        "``jq -r '.ast'`` for readable output. Useful when the gap label is "
+        "a structural node (CompoundStatement, IfStatement, etc.) and you "
+        "need to see where in the tree the missing handler sits. Requires "
+        "--card.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -163,10 +173,18 @@ def _run_add_set(args: argparse.Namespace) -> int:
 
 def _run_diagnose(args: argparse.Namespace) -> int:
     from . import existing
-    from .diagnose import DiagnoseReport, find_first_gap, gap_for_card
+    from .diagnose import (
+        DiagnoseReport,
+        find_first_gap,
+        format_ast,
+        inspect_card,
+    )
 
     if args.card is None and args.project_dir is None:
         print("--project-dir is required unless --card is set.", file=sys.stderr)
+        return 2
+    if args.ast and args.card is None:
+        print("--ast requires --card.", file=sys.stderr)
         return 2
 
     with ScryfallCatalog(force_refresh=args.refresh) as catalog:
@@ -190,8 +208,11 @@ def _run_diagnose(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 2
-            gap = gap_for_card(match, KotlinLowerer())
-            report = DiagnoseReport(set_code=args.set, scanned=1, gap=gap)
+            gap, card_ast = inspect_card(match, KotlinLowerer())
+            ast_repr = format_ast(card_ast) if args.ast and card_ast is not None else None
+            report = DiagnoseReport(
+                set_code=args.set, scanned=1, gap=gap, ast=ast_repr
+            )
         else:
             report = find_first_gap(cards, args.project_dir, args.set)
 
