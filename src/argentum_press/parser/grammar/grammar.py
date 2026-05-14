@@ -897,6 +897,7 @@ def getGrammar():
         | "in" "a" "random" "order" -> randomorderplacement
         | ORDINAL "from" "the" "top" -> fromtopplacement
         | ORDINAL "from" "the" "bottom" -> frombottomplacement
+        | "in" "a" "random" "order" -> randomorderplacement
         zone: ZONE
         ZONE: "the battlefield" | "graveyard"["s"] | ("library"|"libraries") | "hand"["s"] | "stack" | "exile" | "command zone" | "outside the game" | "anywhere"
 
