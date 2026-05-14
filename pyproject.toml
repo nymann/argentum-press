@@ -14,6 +14,15 @@ dependencies = [
     # Optional in spirit: the orchestrator degrades gracefully if pygments
     # is missing or can't find a lexer. Cheap enough to bundle.
     "pygments>=2.18",
+    # libcst: AST-precise edits for the lower-gap playbook (insert
+    # @register handlers, splice isinstance branches into helpers).
+    "libcst>=1.4",
+    # jsonschema: validate the JSON each playbook LLM step is constrained to
+    # emit. Tool-use enforces shape on the wire; we re-check for safety
+    # before applying.
+    "jsonschema>=4.23",
+    # anthropic: Claude SDK for the playbook's tool_use-constrained calls.
+    "anthropic>=0.40",
 ]
 
 [project.scripts]

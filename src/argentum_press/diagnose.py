@@ -209,6 +209,7 @@ def find_first_gap(
     *,
     progress: Callable[[int, int, dict[str, Any]], None] | None = None,
     on_complete: Callable[[int, int, dict[str, Any], Gap | None], None] | None = None,
+    skip_names: set[str] | None = None,
 ) -> DiagnoseReport:
     """Walk ``cards`` in order, returning the first parse/lower failure.
 
@@ -231,12 +232,21 @@ def find_first_gap(
 
     ``candidate_count`` is fixed for the whole walk so callers can render a
     percentage; skipped cards are not counted toward either number.
+
+    ``skip_names`` is the capture-batch hook: callers that have already
+    captured a gap for a given card pass its name here so the next scan
+    surfaces a *different* card. The fix-loop's main path doesn't use this
+    (there's no such thing as an unparsable card in steady state — every
+    card is supposed to be fixable). Skipped cards are excluded from
+    ``candidate_count`` the same way implemented cards are.
     """
     implemented = existing.implemented_cards_in_set(project_dir, set_code)
+    skip = skip_names or set()
     candidates = [
         c for c in cards
         if existing.front_face(c["name"]) not in implemented
         and not is_basic_land(c)
+        and c["name"] not in skip
     ]
     lowerer = KotlinLowerer()
     scanned = 0

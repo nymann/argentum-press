@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Runtime caches
+.parse-cache/
+experiments/playbook-cache/
+
+# Per-run traces (kept locally for postmortem; commit selectively if useful)
+experiments/playbook-traces/
+
+# Stray logs
+*.log

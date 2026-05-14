@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fix-loop playbook design</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 1100px; margin: 2em auto; padding: 0 1.5em; color: #222;
+         line-height: 1.5; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: .3em; }
+  h2 { margin-top: 2.5em; border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  h3 { margin-top: 1.6em; }
+  .legend { background: #fafafa; padding: .8em 1em; border-radius: 6px;
+            border: 1px solid #ddd; font-size: 95%; }
+  .legend span, .pill { padding: .15em .55em; border-radius: 3px; font-weight: 600;
+                 border: 1px solid rgba(0,0,0,.15); display: inline-block;
+                 font-size: 88%; }
+  .legend span.orch,  .pill.orch  { background: #4a90d9; color: #fff; }
+  .legend span.llm,   .pill.llm   { background: #e8693a; color: #fff; }
+  .legend span.cache, .pill.cache { background: #4caf50; color: #fff; }
+  .legend span.could, .pill.could { background: #ffd54f; color: #333; }
+  .step { border: 1px solid #ddd; border-radius: 6px; margin: 1em 0;
+          padding: 0; overflow: hidden; }
+  .step-head { padding: .6em 1em; font-weight: 600; display: flex;
+               justify-content: space-between; align-items: center;
+               color: #fff; }
+  .step-head.orch  { background: #4a90d9; }
+  .step-head.llm   { background: #e8693a; }
+  .step-head.cache { background: #4caf50; }
+  .step-head.could { background: #ffd54f; color: #333; }
+  .step-head .kind { font-size: 80%; font-weight: 400;
+                     padding: .15em .55em; border-radius: 3px;
+                     background: rgba(0,0,0,.08); }
+  .step-body { padding: 1em; }
+  .step-body p { margin: .4em 0; }
+  pre { background: #1e1e1e; color: #eee; padding: .9em; border-radius: 5px;
+        overflow-x: auto; font-size: 13px; line-height: 1.4; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 92%; }
+  p code, li code { background: #f0f0f0; padding: .05em .35em; border-radius: 3px; }
+  .mermaid { background: #fafafa; padding: 1em; border-radius: 6px;
+             border: 1px solid #ddd; text-align: center; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: .5em .7em; text-align: left;
+           vertical-align: top; }
+  th { background: #f5f5f5; }
+  .small { font-size: 88%; color: #555; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { curve: "basis" } });</script>
+</head>
+<body>
+
+<h1>Fix-loop playbook design</h1>
+
+<p>Today, each iteration is one freeform <code>claude -p</code> call against a
+~3K-token prompt; the agent decides what to Read, Edit, Bash, then commits when
+it thinks it's done. This document proposes a replacement: a fixed DAG of
+discrete steps, where each step is either orchestrator code (deterministic) or
+a single structured LLM call. The LLM never touches files — it returns JSON,
+the orchestrator applies it.</p>
+
+<div class="legend">
+  <strong>Legend.</strong><br>
+  <span class="orch">orchestrator</span> deterministic Python — runs every time at zero LLM cost.<br>
+  <span class="llm">LLM (irreducible)</span> requires natural-language judgment; no heuristic suffices.<br>
+  <span class="cache">cacheable LLM</span> LLM call whose output is keyed by content hash; the second hit on the same input never re-calls the model.<br>
+  <span class="could">LLM today, could move</span> currently an LLM call, but a heuristic could replace it (lower confidence; would need eval data).
+</div>
+
+<h2>1. Master flow</h2>
+
+<p>The outer loop is gap-kind-agnostic. After classification it dispatches to
+one of three playbooks. Pytest is the universal gate; on red the playbook gets
+exactly one retry attempt before the orchestrator gives up on the iteration.</p>
+
+<div class="mermaid">
+flowchart TD
+  A([scan set]):::orch --> B{classify}:::orch
+  B -- parse-error --> P[parse-error playbook<br/>2 LLM + 1 retry]:::mixed
+  B -- unmodeled-rule --> U[unmodeled-rule playbook<br/>2 LLM + 1 retry]:::mixed
+  B -- lower --> L[lower playbook<br/>2 LLM + 1 retry<br/>1 cacheable]:::mixed
+  P --> V([pytest gate]):::orch
+  U --> V
+  L --> V
+  V -- green --> C([commit + invalidate cache]):::orch
+  V -- red --> R{retry<br/>budget?}:::orch
+  R -- yes --> P
+  R -- yes --> U
+  R -- yes --> L
+  R -- no --> X([abort iteration]):::orch
+  C --> A
+  X --> A
+  classDef orch  fill:#4a90d9,stroke:#2b5d8c,color:#fff;
+  classDef mixed fill:#fff,stroke:#444,stroke-width:2px,color:#222;
+</div>
+
+<h2>2. The three playbooks</h2>
+
+<p>Each kind has its own DAG of steps. The number of LLM calls per playbook is
+the budget that matters: <code>lower</code> has 2 baseline + 1 retry,
+<code>parse-error</code> has 2 + 1, <code>unmodeled-rule</code> has 2 + 1.
+Compare to today's freeform loop which routinely consumes 10-30 turns per gap.</p>
+
+<h3>2a. Lower-gap playbook</h3>
+
+<div class="mermaid">
+flowchart TD
+  L0([extract AST class def<br/>from parser/ast/*.py]):::orch
+  L1([list @register exemplars<br/>via libcst over lowerer.py]):::orch
+  L2([engine_dsl_hints<br/>grep argentum-engine for class name]):::orch
+  L3[summarize<br/>AST class meaning]:::cache
+  L4[choose strategy:<br/>full / stub / sub-gap]:::llm
+  L5a[pick insertion pattern:<br/>isinstance vs @register]:::could
+  L5b[emit handler body<br/>+ anchor]:::llm
+  L6([apply edit<br/>via libcst]):::orch
+  L7([run pytest]):::orch
+  L8{green?}:::orch
+  L9[diagnose pytest + revise]:::llm
+  L10([revert + apply revised]):::orch
+  L0 --> L1 --> L2 --> L3 --> L4 --> L5a --> L5b --> L6 --> L7 --> L8
+  L8 -- yes --> END([done]):::orch
+  L8 -- no --> L9 --> L10 --> L7
+  classDef orch  fill:#4a90d9,stroke:#2b5d8c,color:#fff;
+  classDef llm   fill:#e8693a,stroke:#a44518,color:#fff;
+  classDef cache fill:#4caf50,stroke:#2c7330,color:#fff;
+  classDef could fill:#ffd54f,stroke:#b58f29,color:#333;
+</div>
+
+<h3>2b. Parse-error playbook</h3>
+
+<div class="mermaid">
+flowchart TD
+  P0([extract failing oracle text<br/>+ Lark error context]):::orch
+  P1([keyword-grep grammar.py<br/>rank candidate parent rules]):::orch
+  P2([dump top-3 rule defs<br/>with line numbers]):::orch
+  P3[pick parent rule from top-3<br/>+ identify missing phrase]:::could
+  P4[write grammar alternative<br/>+ label]:::llm
+  P5([splice into grammar.py<br/>via libcst over the triple-quoted string]):::orch
+  P6([run pytest]):::orch
+  P7{green?}:::orch
+  P8[diagnose + revise<br/>alternative]:::llm
+  P9([revert + reapply]):::orch
+  P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
+  P7 -- yes --> END2([done]):::orch
+  P7 -- no --> P8 --> P9 --> P6
+  classDef orch  fill:#4a90d9,stroke:#2b5d8c,color:#fff;
+  classDef llm   fill:#e8693a,stroke:#a44518,color:#fff;
+  classDef could fill:#ffd54f,stroke:#b58f29,color:#333;
+</div>
+
+<h3>2c. Unmodeled-rule playbook</h3>
+
+<div class="mermaid">
+flowchart TD
+  U0([extract rule def from grammar.py]):::orch
+  U1([list existing AST dataclasses<br/>in parser/ast/*.py]):::orch
+  U2([list recent transformer method exemplars<br/>via git log]):::orch
+  U2b[pick parent module<br/>expressions/statements/abilities]:::could
+  U3[design AST dataclass<br/>name + fields]:::llm
+  U4[write transformer method body]:::llm
+  U5([write AST file + handler<br/>+ update __init__.py]):::orch
+  U6([run pytest]):::orch
+  U7{green?}:::orch
+  U8[diagnose + revise<br/>both class + handler]:::llm
+  U9([revert + reapply]):::orch
+  U0 --> U1 --> U2 --> U2b --> U3 --> U4 --> U5 --> U6 --> U7
+  U7 -- yes --> END3([done]):::orch
+  U7 -- no --> U8 --> U9 --> U6
+  classDef orch  fill:#4a90d9,stroke:#2b5d8c,color:#fff;
+  classDef llm   fill:#e8693a,stroke:#a44518,color:#fff;
+  classDef could fill:#ffd54f,stroke:#b58f29,color:#333;
+</div>
+
+<h2>3. Per-step content</h2>
+
+<p>What each step actually does. For orchestrator steps, the command or function
+call. For LLM steps, the prompt skeleton + the output schema. Most of the prompt
+content is computed by the orchestrator from earlier deterministic steps —
+the LLM sees pre-digested context, never raw files.</p>
+
+<h3>3a. Lower-gap steps</h3>
+
+<div class="step">
+  <div class="step-head orch"><span>L0 · extract AST class def</span><span class="kind">orchestrator</span></div>
+  <div class="step-body">
+    <p>Parse <code>parser/ast/*.py</code> with libcst, locate the class named in the gap label, return its
+    source span + field list.</p>
+    <pre>def extract_ast_class(label: str) -> AstClassInfo:
+    bare = label.split(".")[-1]               # "AtStatement"
+    for path in (REPO/"src/argentum_press/parser/ast").glob("*.py"):
+        module = libcst.parse_module(path.read_text())
+        cls = find_class_def(module, bare)
+        if cls: return AstClassInfo(path, source=cls.code, fields=cls.fields)</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head orch"><span>L1 · list @register exemplars</span><span class="kind">orchestrator</span></div>
+  <div class="step-body">
+    <p>libcst over <code>lowerer.py</code>: collect every <code>@&lt;dispatcher&gt;.register</code> and the body of
+    its handler, group by dispatcher. Filter to handlers under 30 lines so the
+    prompt stays small. Also collect every <code>isinstance(..., ast.X)</code> branch from
+    <code>_effects_from_statement</code> so the LLM can see both patterns.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head orch"><span>L2 · engine DSL hints</span><span class="kind">orchestrator</span></div>
+  <div class="step-body">
+    <p>Existing <code>engine_dsl_hints()</code>: ripgrep the engine repo for the AST class
+    name (stripped of suffixes), return top 50 lines with file:line.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head cache"><span>L3 · summarize AST class</span><span class="kind">cacheable LLM</span></div>
+  <div class="step-body">
+    <p>Keyed by <code>sha256(ast_class_source)</code>. Same class hashes to the same
+    summary even across iterations, so this only ever costs once per AST class
+    in the whole project's lifetime.</p>
+    <pre>PROMPT (~400 tokens)
+"Here is an AST class from argentum-press. Summarize what MTG concept it
+represents in one sentence, and list 2-3 existing handlers it most resembles.
+
+AST CLASS SOURCE
+{{ast_class_source}}
+
+EXAMPLES OF EXISTING HANDLER PATTERNS
+{{handler_exemplars}}
+
+Return JSON exactly:
+  {{ summary: str, mtg_term: str, similar_handlers: [str, str, str] }}"</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head llm"><span>L4 · choose strategy</span><span class="kind">LLM</span></div>
+  <div class="step-body">
+    <p>One of three strategies: <em>full</em> (real DSL call), <em>stub</em> (emits
+    something the engine can compile but is semantically a no-op, lets the gap
+    move past this class), or <em>sub-gap</em> (delegate to an inner emitter that
+    will surface its own gap next iteration).</p>
+    <pre>PROMPT (~600 tokens; reuses L3 cached summary)
+"Decide strategy for handling {{ast_class}}.
+
+L3 SUMMARY
+{{summary}}
+
+ENGINE HINTS (top 50 ripgrep hits in argentum-engine for {{keyword}})
+{{engine_hints}}
+
+RECENT FIX COMMITS for similar classes
+{{recent_diffs}}
+
+Return JSON exactly:
+  {{ strategy: 'full' | 'stub' | 'sub-gap',
+     target_dsl_symbol: str,    # e.g. 'Effects.At'
+     justification: str }}"</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head could"><span>L5a · pick insertion pattern</span><span class="kind">LLM today, could move</span></div>
+  <div class="step-body">
+    <p>Two patterns exist in <code>lowerer.py</code>: <code>@dispatcher.register def _(...)</code> handlers (one per AST class) and <code>isinstance(stmt, ast.X): return ...</code> branches inside helper functions like <code>_effects_from_statement</code>.</p>
+    <p><strong>Heuristic candidate.</strong> Classes ending in <code>Statement</code>
+    that appear inside <code>_effects_from_statement</code> exemplars → isinstance-branch.
+    Classes ending in <code>Ability</code> / <code>Expression</code> → @register. A simple
+    rule over the L1 exemplar list gets this right for most cases (~90%
+    based on git history). Move to orchestrator only after eval data confirms
+    the heuristic isn't dropping signal.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head llm"><span>L5b · emit handler body + anchor</span><span class="kind">LLM</span></div>
+  <div class="step-body">
+    <p>Given the strategy from L4 and the pattern from L5a, write the actual
+    handler body and pinpoint the anchor. <strong>This is the only step that
+    emits code.</strong></p>
+    <pre>PROMPT (~500 tokens; chained from L4 + L5a)
+"Implement strategy={{strategy}} for {{ast_class}} emitting {{target_dsl_symbol}}.
+Pattern: {{pattern}} (decided by L5a heuristic / LLM).
+
+L4 STRATEGY
+{{justification}}
+
+DISPATCHER PATTERNS available in lowerer.py
+{{handler_map}}
+
+Return JSON exactly:
+  {{ anchor: {{ function: str, after_branch: str | null,
+              dispatcher: str | null }},
+     body_python: str,    # the Python code to splice in
+     new_imports: [str] }}"</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head orch"><span>L6 · apply edit</span><span class="kind">orchestrator</span></div>
+  <div class="step-body">
+    <p>libcst transformer: locate the function and the anchor branch, splice
+    <code>body_python</code> in. Update import section if <code>new_imports</code> is non-empty.
+    Writes the file. No git commit yet.</p>
+    <pre>cmd = []  # no subprocess
+new_module = libcst_apply(file=anchor.file,
+                          function=anchor.function,
+                          after=anchor.after_branch,
+                          insert=body_python,
+                          imports=new_imports)
+Path(anchor.file).write_text(new_module.code)</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head orch"><span>L7 · run pytest</span><span class="kind">orchestrator</span></div>
+  <div class="step-body">
+    <pre>uv run pytest tests/test_diagnose.py tests/test_pipeline.py \
+              tests/test_lowerer.py tests/test_classify.py -x -q -n auto</pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-head llm"><span>L9 · diagnose + revise (retry only)</span><span class="kind">LLM</span></div>
+  <div class="step-body">
+    <p>Fires only when L7 returns nonzero. Given the original plan and the
+    pytest output, return a revised plan with the same schema as L5.</p>
+    <pre>PROMPT (~800 tokens)
+"The handler you wrote for {{ast_class}} caused pytest to fail.
+
+ORIGINAL PLAN
+{{plan_from_L5}}
+
+PYTEST OUTPUT (last 1500 chars)
+{{pytest_output}}
+
+Return revised plan in the same schema as L5."</pre>
+  </div>
+</div>
+
+<h3>3b. Parse-error steps (summarised)</h3>
+
+<table>
+  <thead><tr><th>Step</th><th>Kind</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>P0</td><td><span class="pill orch">orch</span></td><td>Already done — <code>parse_error_block</code> exists.</td></tr>
+    <tr><td>P1</td><td><span class="pill orch">orch</span></td><td>Keyword-rank parent rules. Tokenize the failing context, intersect with each rule's literal terminals, score by overlap.</td></tr>
+    <tr><td>P2</td><td><span class="pill orch">orch</span></td><td>For top 3, dump full rule definition with line numbers.</td></tr>
+    <tr><td>P3</td><td><span class="pill could">could move</span></td><td>Pick which of the top-3 ranked rules to attach to. The keyword-overlap ranker from P1 picks the right rule in most cases; the LLM is needed only when ranks are tied or when no overlap exists. Move to orchestrator with a confidence threshold.</td></tr>
+    <tr><td>P4</td><td><span class="pill llm">LLM</span></td><td>"Write the Lark alternative." → JSON with <code>{alternative_text, label}</code>. Irreducible — phrasing depends on natural-language structure of the failing oracle text.</td></tr>
+    <tr><td>P5</td><td><span class="pill orch">orch</span></td><td>Splice the new line into <code>grammar.py</code>'s triple-quoted string. The grammar source is one big string literal — orchestrator finds the rule's line range and inserts a new <code>|</code> branch.</td></tr>
+    <tr><td>P6</td><td><span class="pill orch">orch</span></td><td>Run pytest.</td></tr>
+    <tr><td>P8</td><td><span class="pill llm">LLM</span></td><td>Diagnose pytest failure + revise.</td></tr>
+    <tr><td>P9</td><td><span class="pill orch">orch</span></td><td>Revert + reapply.</td></tr>
+  </tbody>
+</table>
+
+<h3>3c. Unmodeled-rule steps (summarised)</h3>
+
+<table>
+  <thead><tr><th>Step</th><th>Kind</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>U0</td><td><span class="pill orch">orch</span></td><td>Read the rule definition from <code>grammar.py</code> (existing <code>grammar_rule_block</code>).</td></tr>
+    <tr><td>U1</td><td><span class="pill orch">orch</span></td><td>List <code>parser/ast/*.py</code> classes by module (expressions, statements, abilities, etc.).</td></tr>
+    <tr><td>U2</td><td><span class="pill orch">orch</span></td><td>Git log for recent <code>parser: handle &lt;rule&gt;</code> commits, extract diffs.</td></tr>
+    <tr><td>U2b</td><td><span class="pill could">could move</span></td><td>Pick the parent module for the new dataclass. Suffix-based: rules ending in <code>expression</code> → <code>expressions.py</code>, <code>statement</code> → <code>statements.py</code>, <code>ability</code> → <code>abilities.py</code>. Deterministic with a fallback to LLM on miss.</td></tr>
+    <tr><td>U3</td><td><span class="pill llm">LLM</span></td><td>"Design the AST dataclass." → JSON with <code>{classname, fields: [{name, type}]}</code>. Irreducible — field design is a modeling decision.</td></tr>
+    <tr><td>U4</td><td><span class="pill llm">LLM</span></td><td>"Write the transformer method." Given the dataclass shape from U3, emit the method body that constructs it from the lark Tree items.</td></tr>
+    <tr><td>U5</td><td><span class="pill orch">orch</span></td><td>Generate the AST file, add to <code>__init__.py</code>, append the method to <code>transformer.py</code>. All via libcst.</td></tr>
+    <tr><td>U6</td><td><span class="pill orch">orch</span></td><td>Run pytest.</td></tr>
+    <tr><td>U8</td><td><span class="pill llm">LLM</span></td><td>Diagnose pytest failure + revise both class + handler.</td></tr>
+    <tr><td>U9</td><td><span class="pill orch">orch</span></td><td>Revert + reapply.</td></tr>
+  </tbody>
+</table>
+
+<h2>4. Why this is different from "just shrink the prompt"</h2>
+
+<ul>
+  <li><strong>The cache.</strong> L3 (AST class summary) is the biggest win — the
+  same class hashes to the same summary, so over 10 lower-gap iterations
+  touching the same neighbouring classes, you call the LLM once for each
+  summary, not 10×.</li>
+  <li><strong>Replayability collapses.</strong> Today a replay re-runs a 15-turn
+  freeform conversation. Under the playbook, replay is just re-feeding L4 and
+  L5 with the same inputs — the orchestrator steps are pure functions.</li>
+  <li><strong>Prompt A/B becomes step A/B.</strong> Instead of comparing two
+  full prompts you compare two L5 prompts (or just L4). The signal per dollar
+  is much cleaner.</li>
+  <li><strong>Failure is local.</strong> Today a bad agent call corrupts a file.
+  Under the playbook, the orchestrator owns the edit — if L5's JSON doesn't fit
+  the schema, the LLM call retries; if libcst fails to apply, the orchestrator
+  falls back to the freeform path for that one iteration without losing state.</li>
+</ul>
+
+<h2>5. What can't move to the orchestrator</h2>
+
+<ol>
+  <li><strong>Strategy choice (L4 / P3 / U3).</strong> "Should we emit a real DSL
+  call, a placeholder stub, or delegate to a sub-emitter?" requires understanding
+  what the engine has surfaces for and what MTG concept the AST node represents.
+  No rule-based system handles this without becoming a reimplementation of MTG.</li>
+
+  <li><strong>Naming and idiom.</strong> <code>Effects.At()</code> vs <code>Effects.AtPhase()</code>
+  vs <code>effects.atBeginningOf(...)</code> — judgment about engine convention. Same
+  for grammar labels (<code>redirectalldamageexpression</code> vs <code>damageredirection</code>).</li>
+
+  <li><strong>Field threading.</strong> An AST class with <code>phase</code>,
+  <code>consequence</code>, <code>descriptor</code> — which fields are arguments to the DSL
+  call, which become nested handlers, which get dropped? Requires reading both
+  sides.</li>
+
+  <li><strong>Parse-error phrase extraction.</strong> Recognising
+  "all damage that would be dealt to you is dealt to enchanted creature" as a
+  novel alternative of <code>dealsdamageexpression</code> is a natural-language pattern
+  match. Heuristics give a shortlist; the LLM picks the right one.</li>
+
+  <li><strong>Retry diagnosis.</strong> Reading a pytest traceback and deciding
+  "the handler shape was wrong" vs "the import name is misspelled" vs "the
+  upstream AST has changed" is interpretive. Can't move to code without a much
+  richer test infrastructure than we have.</li>
+</ol>
+
+<p class="small">Everything else — context gathering, file editing, import
+management, pytest, commits, cache invalidation, retries — runs on the
+orchestrator with no LLM involvement.</p>
+
+</body>
+</html>
