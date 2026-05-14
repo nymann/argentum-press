@@ -1909,6 +1909,10 @@ class CardTransformer(Transformer):
             return defn
         return GenericDeclarationExpression(definition=_wrap_modifiers(defn, modifiers))
 
+    def manadeclref(self, items):
+        # manadeclaration | manareference
+        return items[0]
+
     def manasymbol(self, items):
         return items[0]
 
