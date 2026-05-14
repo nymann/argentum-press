@@ -1901,6 +1901,14 @@ class CardTransformer(Transformer):
     def manadefinition(self, items):
         return items[0]
 
+    def manadeclaration(self, items):
+        # declarationdecorator* manadefinition
+        modifiers = [it for it in items[:-1] if it is not None]
+        defn = items[-1]
+        if not modifiers:
+            return defn
+        return GenericDeclarationExpression(definition=_wrap_modifiers(defn, modifiers))
+
     def manasymbol(self, items):
         return items[0]
 
