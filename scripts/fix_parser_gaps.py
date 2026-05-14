@@ -1020,6 +1020,23 @@ def commit_iteration(
     # `git add src/` picks up new AST files.
     git("add", "-u")
     git("add", "src/", check=False)
+    # `git_dirty()` returns True for untracked files too (e.g. experiments/runs/
+    # from --record), but the stages above only pick up tracked changes and
+    # src/ additions. If the agent's "fix" was actually a no-op (stale-cache
+    # diagnosis, doc-only change outside src/, etc.), nothing is staged and
+    # `git commit` would crash with "nothing to commit". Detect that here so
+    # the loop continues to the next iteration instead of dying — and the
+    # caller's invalidate_label still runs, dropping the stale entry.
+    diff_check = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    if diff_check.returncode == 0:
+        stamp(
+            f"{YELLOW}no staged changes after agent run (likely stale-cache "
+            f"diagnosis); skipping commit{RESET}"
+        )
+        return
     subject = _commit_subject(gap_kind, label, card)
     body = summary.strip() or f"set={set_code}, iteration {iteration}"
     body = "\n".join(body.splitlines()[:20])  # cap for sanity
