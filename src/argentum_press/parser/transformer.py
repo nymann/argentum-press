@@ -1231,6 +1231,12 @@ class CardTransformer(Transformer):
         # Name pass-throughs; we don't model them on characteristics yet.
         return items[-1]
 
+    def characteristicpossessiveexpr(self, items):
+        # `possessiveterm+ characteristicterm` — possessiveterm is a
+        # surface-only marker (returns None); only the characteristic carries
+        # downstream meaning, mirroring `characteristicterm` above.
+        return items[-1]
+
     def characteristic(self, items):
         # OBJECTCHARACTERISTIC | PLAYERCHARACTERISTIC token — pass through
         # as an opaque Name (same shape as modifier/qualifier).
