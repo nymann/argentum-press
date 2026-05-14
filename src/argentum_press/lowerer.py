@@ -179,6 +179,12 @@ def _classify_type_operand(node: Any) -> str:
             if kind != "unknown":
                 return kind
         return "unknown"
+    if isinstance(node, ast.AndOrExpression):
+        for side in (node.lhs, node.rhs):
+            kind = _classify_type_operand(side)
+            if kind != "unknown":
+                return kind
+        return "unknown"
     return "unknown"
 
 
