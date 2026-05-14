@@ -583,7 +583,7 @@ def getGrammar():
         gainabilityexpression: declarationorreference? "gain"["s"]  abilitysequencestatement
         | declarationorreference? "gain"["s"] "\\"" statementblock "\\"" "."? "\\""?
         loseabilityexpression: declarationorreference? "lose"["s"] abilitysequencestatement
-        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression)
+        lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression) ("any" "time")?
         takeextraturnexpression: playerdeclref? "take"["s"] timeexpression
         flipcoinsexpression: playerdeclref? "flip"["s"] ("a" | valuecardinal) "coin"["s"]
         !winloseeventexpression: playerdeclref? ("lose"|"win")["s"] ("the" "flip" | "the" "game")?
@@ -887,6 +887,7 @@ def getGrammar():
         !cardexpression: possessiveterm? ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? ("or" valueterm)? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?
 
         zonedeclarationexpression: (declarationdecorator* | referencedecorator*) zone
+        | "the" ("top" | "bottom") "of" zonedeclarationexpression -> topbottomofzonedecl
         zoneplacementmodifier: "in" "any" "order" -> anyorderplacement
         | "in" "a" "random" "order" -> randomorderplacement
         | ORDINAL "from" "the" "top" -> fromtopplacement
