@@ -911,6 +911,16 @@ class KotlinLowerer:
         # past DescriptionExpression to whatever the next unhandled node is.
         return "Effects.Description()"
 
+    @effect.register
+    def _(self, e: ast.ControlExpression) -> str:
+        # "<controller> control(s)" — a decoration carrying only the
+        # controller as a surface descriptor (e.g. "you control" appearing
+        # as a standalone ExpressionStatement). argentum-engine has no
+        # top-level effect surface for a bare control predicate; emit a
+        # stub so the gap moves past ControlExpression to whatever the next
+        # unhandled node is.
+        return "Effects.Control()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
