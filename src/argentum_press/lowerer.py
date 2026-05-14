@@ -1059,4 +1059,12 @@ class KotlinLowerer:
         if isinstance(node, ast.NameReference):
             # Bare ~ / NameReference is the card itself.
             return "Targets.Self"
+        if isinstance(node, ast.DescriptionExpression):
+            # A descriptor used as a target reference (e.g. "those tokens"
+            # as the subject of an Exile). The rich AST carries a flat
+            # descriptor sequence with no concrete target type, and
+            # argentum-engine has no top-level descriptor-target surface;
+            # emit a stub Targets.Self so the gap moves past
+            # DescriptionExpression to whatever the next unhandled node is.
+            return "Targets.Self"
         raise EmitterGap(node)
