@@ -1916,11 +1916,23 @@ def _get_parser() -> lark.Lark:
 def transform(tree: Tree) -> Card:
     """Lower a parsed Lark ``cardtext`` tree to a :class:`Card`.
 
-    Raises :class:`LoweringIncomplete` if any unmodeled shape is hit.
+    Raises :class:`LoweringIncomplete` if any unmodeled shape is hit. Lark
+    wraps exceptions thrown by *named* transformer methods (anything other
+    than ``__default__``) in :class:`lark.exceptions.VisitError` via
+    ``_call_userfunc``; we unwrap here so ``parse()``'s single
+    ``except LoweringIncomplete`` catches both code paths the same way.
+    Without this an explicit ``raise LoweringIncomplete(...)`` from e.g.
+    ``abilityword`` propagates uncaught and crashes the gap-finding worker.
     """
     if tree is None:
         return Card(text_box=TextBox(lines=()), abilities=())
-    result = CardTransformer().transform(tree)
+    from lark.exceptions import VisitError
+    try:
+        result = CardTransformer().transform(tree)
+    except VisitError as e:
+        if isinstance(e.orig_exc, LoweringIncomplete):
+            raise e.orig_exc from e
+        raise
     if not isinstance(result, Card):
         # Defensive: the cardtext method always returns Card, but if Lark
         # returns the inner ability list directly (e.g. start-rule oddity)
