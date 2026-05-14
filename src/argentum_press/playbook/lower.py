@@ -12,11 +12,10 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import cache, context, edits, heuristics, llm
+from . import PlaybookResult, StepLog, cache, context, edits, heuristics, llm, log_step
 
 
 # Pytest invocation reused across the success path and the retry. We mirror
@@ -51,50 +50,6 @@ def _resolve_models(override: str | None) -> tuple[str, str, str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Outcome
-# ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class StepLog:
-    """One step's input/output snapshot for the trace TSV / debug dump."""
-
-    name: str
-    kind: str  # "orch" / "llm" / "cache" / "heuristic"
-    payload: dict[str, Any] = field(default_factory=dict)
-    duration_s: float = 0.0
-
-
-@dataclass(slots=True)
-class PlaybookResult:
-    label: str
-    outcome: str  # "applied" / "applied-after-retry" / "aborted-l0" /
-                  # "aborted-l6" / "aborted-pytest" / "aborted-retry-pytest"
-    steps: list[StepLog] = field(default_factory=list)
-    final_plan: dict[str, Any] | None = None
-    pytest_first_tail: str = ""
-    pytest_retry_tail: str = ""
-    edit_path: str | None = None
-
-    def as_json(self) -> str:
-        return json.dumps(
-            {
-                "label": self.label,
-                "outcome": self.outcome,
-                "final_plan": self.final_plan,
-                "pytest_first_tail": self.pytest_first_tail,
-                "pytest_retry_tail": self.pytest_retry_tail,
-                "edit_path": self.edit_path,
-                "steps": [
-                    {"name": s.name, "kind": s.kind, "duration_s": round(s.duration_s, 3), "payload": s.payload}
-                    for s in self.steps
-                ],
-            },
-            indent=2,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Pytest runner (mirror of scripts/fix_parser_gaps.py:run_pytest)
 # ---------------------------------------------------------------------------
 
@@ -114,8 +69,7 @@ def run_pytest(repo: Path) -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 
-def _log_step(steps: list[StepLog], name: str, kind: str, t0: float, **payload: Any) -> None:
-    steps.append(StepLog(name=name, kind=kind, payload=payload, duration_s=time.monotonic() - t0))
+_log_step = log_step  # legacy alias retained for in-module call sites
 
 
 def _short(text: str, n: int) -> str:
