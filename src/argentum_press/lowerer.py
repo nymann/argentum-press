@@ -746,6 +746,14 @@ class KotlinLowerer:
             return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AsStatement):
             return self._effects_from_statement(stmt.consequence)
+        if isinstance(stmt, ast.AtStatement):
+            # "at the beginning of <step>, <Y>" — a phase-based trigger. The
+            # rich AST carries the trigger phase as a surface DescriptionExpression
+            # and the consequence varies widely; argentum-engine has no top-level
+            # at-phase Effect surface (Triggers.BeginningOfUpkeep / EndOfTurn
+            # attach to triggeredAbility blocks, not Effects). Emit a stub so
+            # the gap moves past AtStatement.
+            return ("Effects.At()",)
         if isinstance(stmt, ast.CostIncreaseStatement):
             # "<spells> cost {X} more to cast" — the rich AST carries the
             # subject as a surface descriptor and the amount as a ManaExpression;
