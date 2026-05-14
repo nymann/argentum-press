@@ -81,3 +81,57 @@ def pick_pattern(classname: str, exemplars: LowererExemplars) -> PatternChoice:
         confidence=0.4,
         rationale=f"{classname} doesn't match a confident pattern; defaulting to @register",
     )
+
+
+# ---------------------------------------------------------------------------
+# U2b — parent module suffix heuristic
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleChoice:
+    """U2b result: which ``parser/ast/*.py`` file to add the new dataclass to."""
+
+    module: str          # e.g. "statements"
+    confidence: float    # 0.0 .. 1.0
+    rationale: str
+
+
+# Suffix -> parent module mapping. Order matters when multiple suffixes match
+# (rule names are short; longest-suffix-wins keeps "abilityword" out of
+# abilities.py and "expressionstatement" out of expressions.py).
+_SUFFIX_MAP: tuple[tuple[str, str], ...] = (
+    ("expressionstatement", "statements"),
+    ("statement", "statements"),
+    ("expression", "expressions"),
+    ("ability", "abilities"),
+    ("modifier", "expressions"),
+    ("declaration", "references"),
+    ("declref", "references"),
+    ("reference", "references"),
+    ("expr", "expressions"),
+)
+
+
+def pick_parent_module(rule_name: str) -> ModuleChoice:
+    """Pick which AST submodule a new dataclass for ``rule_name`` belongs in.
+
+    Suffix-based: ``…statement`` -> statements.py, ``…expression`` ->
+    expressions.py, ``…ability`` -> abilities.py, etc. Falls back to
+    ``expressions`` with low confidence so the LLM can override. We don't
+    encode rule-name -> module by literal lookup because the grammar churns
+    enough that a frozen map would rot.
+    """
+    name = rule_name.lower()
+    for suffix, mod in _SUFFIX_MAP:
+        if name.endswith(suffix):
+            return ModuleChoice(
+                module=mod,
+                confidence=0.9,
+                rationale=f"{rule_name!r} ends in {suffix!r} -> {mod}.py",
+            )
+    return ModuleChoice(
+        module="expressions",
+        confidence=0.3,
+        rationale=f"{rule_name!r} has no recognised suffix; defaulting to expressions.py",
+    )
