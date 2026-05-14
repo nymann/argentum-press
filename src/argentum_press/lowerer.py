@@ -787,6 +787,15 @@ class KotlinLowerer:
         # so the gap moves past CreateTokenExpression.
         return "Effects.CreateToken()"
 
+    @effect.register
+    def _(self, e: ast.ChangeZoneExpression) -> str:
+        # "<X> enters/leaves <zone>" used as an effect (e.g. "this artifact
+        # enters with two +1/+1 counters on it"). The rich AST carries the
+        # subject and zone as surface descriptors only, and argentum-engine
+        # has no top-level zone-change Effect surface yet. Emit a stub so
+        # the gap moves past ChangeZoneExpression.
+        return "Effects.ChangeZone()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-

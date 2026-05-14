@@ -216,32 +216,6 @@ def grammar_rule_uses(rule: str, limit: int = 20) -> str | None:
     return "\n".join(out) if out else None
 
 
-def parse_error_block(card_name: str, oracle_text: str) -> str | None:
-    """Render the structured Lark error for a parse-error gap.
-
-    Routes through the disk parse cache so this re-parse is a microsecond
-    cache hit when the scan that surfaced this gap already wrote the entry.
-    """
-    from argentum_press.parse_cache import cached_parse
-
-    r = cached_parse({"name": card_name, "oracle_text": oracle_text})
-    if r.error is None or r.error.details is None:
-        return None
-    d = r.error.details
-    expected = ", ".join(d.expected[:30]) or "(empty - Earley parser didn't expose a candidate set)"
-    return (
-        f"  position:    line {d.line}, col {d.column} (pos_in_stream={d.pos_in_stream})\n"
-        f"  unexpected:  {d.unexpected}\n"
-        f"  expected:    {expected}\n"
-        f"  context:\n"
-        f"{_indent(d.context, '    ')}\n"
-        f"  preprocessed text Lark saw (post _preprocess):\n"
-        f"{_indent(d.preprocessed_text, '    ')}\n"
-        f"  full lark message:\n"
-        f"{_indent(d.raw_message, '    ')}"
-    )
-
-
 def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line for line in text.splitlines())
 
@@ -324,8 +298,8 @@ def gather_context(
     label: str,
     card_name: str,
     oracle_text: str,
-    parse_details: Any,
     ast_text: str | None,
+    parse_error_block: str | None,
 ) -> GapContext:
     bare_label = label.split(":", 1)[-1] if ":" in label else label
     bare_label = bare_label.split(".")[-1]
@@ -337,10 +311,6 @@ def gather_context(
         LOWERER if kind == "lower"
         else GRAMMAR if is_parse_error
         else TRANSFORMER
-    )
-
-    pe_block = (
-        parse_error_block(card_name, oracle_text) if is_parse_error else None
     )
 
     rule_def = rule_uses = grammar_excerpt = None
@@ -366,8 +336,8 @@ def gather_context(
         label=label,
         card_name=card_name,
         oracle_text=oracle_text,
-        preprocessed_text=(parse_details.preprocessed_text if parse_details else None),
-        parse_error_block=pe_block,
+        preprocessed_text=None,
+        parse_error_block=parse_error_block,
         ast_block=ast_text,
         gap_class_def=class_def,
         rule_def=rule_def,
@@ -645,60 +615,81 @@ def _commit_subject(kind: str, label: str, card: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _purge_argentum_press_modules() -> None:
-    """Drop cached ``argentum_press.*`` modules so the next import re-reads
-    them from disk.
-
-    The agent edits parser/lowerer files between iterations. Python caches
-    the first-imported version in ``sys.modules``, so a plain re-import
-    silently returns the stale module and ``find_first_gap`` rediscovers
-    the gap the agent just fixed — tripping the same-label abort.
-    """
-    for name in list(sys.modules):
-        if name == "argentum_press" or name.startswith("argentum_press."):
-            del sys.modules[name]
-
-
-def _find_gap_with_ast(
+def _find_gap_subprocess(
     set_code: str, project_dir: Path
-) -> tuple[Any, str | None]:
-    """Return ``(gap, ast_text)`` for the first unimplemented gap in ``set_code``.
+) -> tuple[Any, str | None, str | None]:
+    """Run gap-finding in a fresh subprocess so the agent's last edits take
+    effect. Returns ``(gap, ast_text, parse_error_block)`` — ``gap`` is None
+    for a clean set.
 
-    ``gap`` is None when the set is clean. ``ast_text`` is the pretty-printed
-    AST for the failing card (lower gaps only); None for parse gaps and
-    when ``gap is None``.
+    The orchestrator's main loop has been calling ``argentum_press.*`` modules
+    in-process. Python caches imported modules in ``sys.modules`` for the
+    lifetime of the process; the agent edits ``grammar.py`` / ``transformer.py``
+    / ``lowerer.py`` between iterations, but those edits are invisible to
+    already-imported modules. Spawning a fresh ``python -m argentum_press
+    ._fix_loop_gap`` subprocess sidesteps that entirely — each iteration's
+    scan re-imports from disk.
+
+    Inherits ``ARGENTUM_PARSE_CACHE`` (and any sibling env) so the worker
+    populates the same parse cache the orchestrator's invalidate-after-fix
+    pruning operates on.
     """
-    _purge_argentum_press_modules()
-    from argentum_press.catalog import ScryfallCatalog
-    from argentum_press.diagnose import find_first_gap, format_ast, inspect_card
-    from argentum_press.lowerer import KotlinLowerer
+    cmd = [
+        "uv", "run", "python", "-m", "argentum_press._fix_loop_gap",
+        set_code, str(project_dir),
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=REPO,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout and proc.stderr
 
-    with ScryfallCatalog() as catalog:
-        stamp(f"{DIM}fetching {set_code} from Scryfall...{RESET}")
-        cards = catalog.fetch(set_code)
-        cache = catalog.last_cache_state.source if catalog.last_cache_state else "?"
-        stamp(f"{DIM}fetched {len(cards)} cards (cache={cache}){RESET}")
+    result_event: dict[str, Any] | None = None
+    for raw in proc.stdout:
+        line = raw.rstrip("\n").strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Non-JSON output (e.g. a stray print) — surface it but don't
+            # treat it as fatal.
+            stamp(f"{DIM}{line[:240]}{RESET}")
+            continue
+        et = event.get("type")
+        if et == "log":
+            stamp(f"{DIM}{event.get('msg', '')}{RESET}")
+        elif et == "result":
+            result_event = event
 
-        last = [0]
-        def _progress(scanned: int, total: int) -> None:
-            if scanned - last[0] >= 25 or scanned == total:
-                stamp(f"{DIM}scanning... {scanned}/{total}{RESET}")
-                last[0] = scanned
+    stderr_output = proc.stderr.read()
+    proc.wait()
+    if proc.returncode != 0:
+        stamp(f"{RED}gap subprocess exited {proc.returncode}{RESET}")
+        if stderr_output.strip():
+            stamp(stderr_output.strip()[:500])
+        return None, None, None
+    if result_event is None:
+        stamp(f"{RED}gap subprocess produced no result event{RESET}")
+        return None, None, None
 
-        stamp(f"{DIM}scanning for first gap (this is silent; speedups in plan){RESET}")
-        report = find_first_gap(cards, project_dir, set_code, progress=_progress)
-        if report.gap is None:
-            return None, None
-        stamp(f"{DIM}gap found after scanning {report.scanned} card(s){RESET}")
-        # Refetch AST for the failing card so the orchestrator can include
-        # it in the prompt for lower gaps.
-        match = next((c for c in cards if c["name"] == report.gap.card_name), None)
-        ast_text: str | None = None
-        if match is not None:
-            _, card_ast = inspect_card(match, KotlinLowerer())
-            if card_ast is not None:
-                ast_text = format_ast(card_ast)
-    return report.gap, ast_text
+    gap_data = result_event.get("gap")
+    if gap_data is None:
+        return None, None, None
+
+    from argentum_press.diagnose import Gap
+    gap = Gap(
+        kind=gap_data["kind"],
+        label=gap_data["label"],
+        card_name=gap_data["card_name"],
+        oracle_text=gap_data["oracle_text"],
+        parse_details=None,
+    )
+    return gap, result_event.get("ast"), result_event.get("parse_error_block")
 
 
 def main() -> int:
@@ -728,7 +719,7 @@ def main() -> int:
             return 0
         print(f"\n{BOLD}=== iteration {i} ==={RESET}", flush=True)
 
-        gap, ast_text = _find_gap_with_ast(args.set_code, args.project_dir)
+        gap, ast_text, pe_block = _find_gap_subprocess(args.set_code, args.project_dir)
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
@@ -743,8 +734,8 @@ def main() -> int:
             label=gap.label,
             card_name=gap.card_name,
             oracle_text=gap.oracle_text,
-            parse_details=gap.parse_details,
             ast_text=ast_text,
+            parse_error_block=pe_block,
         )
 
         stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
