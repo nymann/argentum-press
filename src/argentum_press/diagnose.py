@@ -208,6 +208,7 @@ def find_first_gap(
     set_code: str,
     *,
     progress: Callable[[int, int, dict[str, Any]], None] | None = None,
+    on_complete: Callable[[int, int, dict[str, Any], Gap | None], None] | None = None,
 ) -> DiagnoseReport:
     """Walk ``cards`` in order, returning the first parse/lower failure.
 
@@ -221,6 +222,13 @@ def find_first_gap(
     so the caller can render the current card while the slow Earley parse is
     running. The card dict (not just the name) is passed so the caller can
     consult the parse cache or other per-card state.
+
+    ``on_complete``, if given, is called as
+    ``on_complete(scanned, candidate_count, card, gap)`` *after* each parse
+    so the caller can render success/failure. ``gap`` is None when the card
+    parsed and lowered cleanly. The walk short-circuits on the first non-None
+    gap, so ``on_complete`` fires exactly once for the failing card.
+
     ``candidate_count`` is fixed for the whole walk so callers can render a
     percentage; skipped cards are not counted toward either number.
     """
@@ -238,6 +246,8 @@ def find_first_gap(
         if progress is not None:
             progress(scanned, len(candidates), card)
         gap = gap_for_card(card, lowerer)
+        if on_complete is not None:
+            on_complete(scanned, len(candidates), card, gap)
         if gap is not None:
             return DiagnoseReport(set_code=set_code, scanned=scanned, gap=gap)
 

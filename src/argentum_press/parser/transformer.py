@@ -43,6 +43,7 @@ from lark.exceptions import LarkError, UnexpectedInput
 
 from argentum_press.parser.ast import (
     AbilitySequenceStatement,
+    AbilityWord,
     AbsorbAbility,
     ActivationRestrictionStatement,
     ActivationStatement,
@@ -426,7 +427,7 @@ class CardTransformer(Transformer):
 
     def regularability(self, items):
         # abilityword? statementblock remindertext?
-        ability_word = None
+        ability_word: AbilityWord | None = None
         block: StatementBlock | None = None
         reminder: ReminderText | None = None
         for it in items:
@@ -434,9 +435,8 @@ class CardTransformer(Transformer):
                 block = it
             elif isinstance(it, ReminderText):
                 reminder = it
-            else:
-                # ability word (rare in BLB) - we don't model it yet
-                pass
+            elif isinstance(it, AbilityWord):
+                ability_word = it
         if block is None:
             raise LoweringIncomplete("regularability-without-block")
         # Promote conditional statements into TriggeredAbility surface.
@@ -452,8 +452,9 @@ class CardTransformer(Transformer):
         return RegularAbility(block=block, ability_word=ability_word, reminder_text=reminder)
 
     def abilityword(self, items):
-        # Carried through but ignored at the Card level for now.
-        raise LoweringIncomplete("unmodeled-rule:abilityword")
+        # abilityword: WORD+ "—"  -- items are WORD tokens.
+        word = " ".join(str(t) for t in items)
+        return AbilityWord(word=word)
 
     # -- Keyword list -------------------------------------------------------
 

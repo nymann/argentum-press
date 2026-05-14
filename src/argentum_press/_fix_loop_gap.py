@@ -35,8 +35,14 @@ def _emit(event: dict[str, Any]) -> None:
     print(json.dumps(event), flush=True)
 
 
-def _log(msg: str) -> None:
-    _emit({"type": "log", "msg": msg})
+def _log(msg: str, color: str | None = None) -> None:
+    """Emit a log event. ``color`` is a name ("green", "red", "yellow")
+    the orchestrator maps to the corresponding ANSI sequence (or to no
+    color on non-TTY / NO_COLOR). Default rendering is DIM."""
+    event: dict[str, Any] = {"type": "log", "msg": msg}
+    if color is not None:
+        event["color"] = color
+    _emit(event)
 
 
 def _indent(text: str, prefix: str) -> str:
