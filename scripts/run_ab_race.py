@@ -70,11 +70,14 @@ def _have_session(name: str) -> bool:
 def _spawn_panes(session: str, freeform_cmd: str, playbook_cmd: str) -> None:
     """Start a fresh tmux session with two side-by-side panes.
 
-    The trailing ``; exec zsh`` keeps the pane open after the fix-loop exits,
-    so you can inspect output without it disappearing. ``send-keys`` is used
-    rather than the command argument to ``new-session`` because the latter
-    closes the pane the moment its command exits (which we don't want on
-    a no-gaps-remaining or an abort).
+    Targets the session by name (``-t {session}``) rather than indexed
+    window/pane addresses like ``{session}:0.0``. tmux configurations vary
+    on ``base-index`` (0 vs 1) and the indexed form breaks under
+    ``base-index 1``; the name form always resolves to the active pane.
+
+    ``send-keys`` is used rather than the command argument to ``new-session``
+    because the latter closes the pane the moment its command exits, which
+    we don't want on a no-gaps-remaining or an abort.
     """
     if _have_session(session):
         subprocess.run(["tmux", "kill-session", "-t", session], check=False)
@@ -82,22 +85,18 @@ def _spawn_panes(session: str, freeform_cmd: str, playbook_cmd: str) -> None:
         ["tmux", "new-session", "-d", "-s", session, "-x", "240", "-y", "60"],
         check=True,
     )
+    # Initial pane → freeform.
     subprocess.run(
-        ["tmux", "rename-window", "-t", f"{session}:0", "race"],
+        ["tmux", "send-keys", "-t", session, freeform_cmd, "C-m"],
         check=True,
     )
-    # Pane 0 = freeform.
+    # Split horizontally; the new pane becomes the active one.
     subprocess.run(
-        ["tmux", "send-keys", "-t", f"{session}:0.0", freeform_cmd, "C-m"],
-        check=True,
-    )
-    # Split into pane 1 = playbook.
-    subprocess.run(
-        ["tmux", "split-window", "-h", "-t", f"{session}:0.0"],
+        ["tmux", "split-window", "-h", "-t", session],
         check=True,
     )
     subprocess.run(
-        ["tmux", "send-keys", "-t", f"{session}:0.1", playbook_cmd, "C-m"],
+        ["tmux", "send-keys", "-t", session, playbook_cmd, "C-m"],
         check=True,
     )
     subprocess.run(
