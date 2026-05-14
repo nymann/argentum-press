@@ -752,6 +752,13 @@ class KotlinLowerer:
         # None). Emit a stub so the gap moves past AddRemoveExpression.
         return "Effects.AddCounters()"
 
+    @effect.register
+    def _(self, e: ast.ChoiceExpression) -> str:
+        # "choose <X>" — the rich AST carries the operand as a surface
+        # descriptor only; we emit a stub call so the gap moves past
+        # ChoiceExpression to whatever the next unhandled node is.
+        return "Effects.Choose()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
