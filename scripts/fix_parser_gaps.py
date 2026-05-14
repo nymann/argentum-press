@@ -701,6 +701,27 @@ def commit_iteration(
     body = "\n".join(body.splitlines()[:20])  # cap for sanity
     msg = f"{subject}\n\n{body}\n"
     subprocess.run(["git", "commit", "-m", msg], cwd=REPO, check=True)
+    _push_or_warn()
+
+
+def _push_or_warn() -> None:
+    """Push HEAD to its upstream after a successful commit. Warn but don't
+    abort on push failure — the commit is preserved locally and the user can
+    retry with a manual ``git push``. Aborting the fix-loop on a transient
+    network error would forfeit the iteration's progress.
+    """
+    try:
+        subprocess.run(
+            ["git", "push"], cwd=REPO, check=True,
+            capture_output=True, text=True,
+        )
+        stamp(f"{DIM}git push: ok{RESET}")
+    except subprocess.CalledProcessError as e:
+        snippet = (e.stderr or e.stdout or "").strip()[:300]
+        stamp(
+            f"{YELLOW}git push failed (commit preserved locally): "
+            f"{snippet}{RESET}"
+        )
 
 
 _LABEL_BARE = re.compile(r"^(parse-error|unmodeled-rule|lark-error):")
@@ -718,6 +739,12 @@ def _commit_subject(kind: str, label: str, card: str) -> str:
 # ---------------------------------------------------------------------------
 # main loop
 # ---------------------------------------------------------------------------
+
+
+class GapSubprocessError(RuntimeError):
+    """Raised when the gap-finding subprocess fails (nonzero exit, no result
+    event, malformed output). Distinct from "no gaps remaining" — the main
+    loop catches this and aborts instead of misreporting a clean scan."""
 
 
 def _find_gap_subprocess(
@@ -774,13 +801,16 @@ def _find_gap_subprocess(
     stderr_output = proc.stderr.read()
     proc.wait()
     if proc.returncode != 0:
-        stamp(f"{RED}gap subprocess exited {proc.returncode}{RESET}")
+        # Subprocess crashed (e.g. an uncaught exception in the parser). The
+        # main loop must distinguish this from a clean set — returning a
+        # None-tuple here used to silently produce "no gaps remaining. done."
+        # and mask the real failure.
+        msg = f"gap subprocess exited {proc.returncode}"
         if stderr_output.strip():
-            stamp(stderr_output.strip()[:500])
-        return None, None, None
+            msg += f"\n{stderr_output.strip()[:1500]}"
+        raise GapSubprocessError(msg)
     if result_event is None:
-        stamp(f"{RED}gap subprocess produced no result event{RESET}")
-        return None, None, None
+        raise GapSubprocessError("gap subprocess produced no result event")
 
     gap_data = result_event.get("gap")
     if gap_data is None:
@@ -824,7 +854,13 @@ def main() -> int:
             return 0
         print(f"\n{BOLD}=== iteration {i} ==={RESET}", flush=True)
 
-        gap, ast_text, pe_block = _find_gap_subprocess(args.set_code, args.project_dir)
+        try:
+            gap, ast_text, pe_block = _find_gap_subprocess(
+                args.set_code, args.project_dir
+            )
+        except GapSubprocessError as e:
+            stamp(f"{RED}{e}{RESET}")
+            return 2
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
