@@ -212,6 +212,35 @@ def _find_target_subject(node: Any) -> ast.TargetExpression | None:
     return None
 
 
+_ENCHANT_TARGET: dict[str, str] = {
+    "creature": "Creature",
+    "land": "Land",
+    "permanent": "Permanent",
+    "artifact": "Artifact",
+    "enchantment": "Enchantment",
+    "player": "Player",
+}
+
+
+def _enchant_target_name(node: Any) -> str | None:
+    """Find the ``Targets.<X>`` facade name for an EnchantAbility descriptor."""
+    if isinstance(node, ast.Name):
+        return _ENCHANT_TARGET.get(node.name.strip().lower())
+    if isinstance(node, ast.DescriptionExpression):
+        for d in node.descriptors:
+            name = _enchant_target_name(d)
+            if name is not None:
+                return name
+        return None
+    if isinstance(node, ast.TypeExpression):
+        for t in node.types:
+            name = _enchant_target_name(t)
+            if name is not None:
+                return name
+        return None
+    return None
+
+
 def _is_end_of_turn(conditional: Any) -> bool:
     """Check that an UntilStatement's conditional says 'end of turn'."""
     if isinstance(conditional, ast.DescriptionExpression):
@@ -315,7 +344,10 @@ class KotlinLowerer:
 
     @ability.register
     def _(self, ability: ast.EnchantAbility) -> str:
-        raise EmitterGap(ability)
+        target_name = _enchant_target_name(ability.descriptor)
+        if target_name is None:
+            raise EmitterGap(ability)
+        return f"auraTarget = Targets.{target_name}"
 
     @ability.register
     def _(self, ability: ast.HexproofAbility) -> str:
