@@ -636,3 +636,10 @@ class DiscardExpression(EffectExpression):
     player: Expression | None = None
     subject: Expression | None = None
     at_random: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WhoExpression(Expression):
+    """``who <statement>`` — relative clause introducing a subject described by a statement."""
+
+    statement: Statement | None = None
