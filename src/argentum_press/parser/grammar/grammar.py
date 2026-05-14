@@ -864,7 +864,7 @@ def getGrammar():
         | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" | "modified" | "different" // TODO: ensure 'suspected' works properly
         TAPPEDSTATUSMODIFIER: "tapped" | "untapped"
         EFFECTSTATUSMODIFIER: "named" | "chosen" | "chosen at random" | "revealed" | "returned" | "destroyed" | "exiled" | "died" | "countered" | "sacrificed"
-        | "the target of a spell or ability" | "prevented" | "created" | "cast"
+        | "the target of a spell or ability" | "prevented" | "created" | "cast" | "paid"
         controlmodifier: "under" referencedecorator+ "control"
         attachmentmodifier: "attached" ("only"? "to" declarationorreference)? -> attachedmodifier
         | "unattached" ("from" declarationorreference)? -> unattachedmodifier
@@ -889,7 +889,7 @@ def getGrammar():
         PLAYERCHARACTERISTIC: "maximum hand size" | "life total"["s"] | "life" | "cards in hand"
         # OBJECTCHARACTERISTIC: "card"? "name" | "mana cost" | "converted mana cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         # | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
-        OBJECTCHARACTERISTIC: "card"? "name"["s"] | "mana value" | "mana cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
+        OBJECTCHARACTERISTIC: "card"? "name"["s"] | "mana value" | "mana cost" | "mayhem cost" | "color"["s"] | "color indicator" | "type"["s"] | "card type"["s"] | "subtype"["s"] | "supertype"["s"]
         | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
 
         //[TODO: Not quite done, there are expressions like 'a number of cards equal to [...]'. There's some overlapping responsibilities with descriptions involving cards, maybe.]
