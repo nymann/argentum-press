@@ -207,7 +207,7 @@ def find_first_gap(
     project_dir: Path,
     set_code: str,
     *,
-    progress: Callable[[int, int, str], None] | None = None,
+    progress: Callable[[int, int, dict[str, Any]], None] | None = None,
 ) -> DiagnoseReport:
     """Walk ``cards`` in order, returning the first parse/lower failure.
 
@@ -217,11 +217,12 @@ def find_first_gap(
     None`` result means "set is clean" vs "set was empty after triage".
 
     ``progress``, if given, is called as
-    ``progress(scanned, candidate_count, card_name)`` *before* each card is
-    parsed so the caller can render the current card while the slow Earley
-    parse is running. ``candidate_count`` is fixed for the whole walk so
-    callers can render a percentage; skipped cards are not counted toward
-    either number.
+    ``progress(scanned, candidate_count, card)`` *before* each card is parsed
+    so the caller can render the current card while the slow Earley parse is
+    running. The card dict (not just the name) is passed so the caller can
+    consult the parse cache or other per-card state.
+    ``candidate_count`` is fixed for the whole walk so callers can render a
+    percentage; skipped cards are not counted toward either number.
     """
     implemented = existing.implemented_cards_in_set(project_dir, set_code)
     candidates = [
@@ -235,7 +236,7 @@ def find_first_gap(
     for card in candidates:
         scanned += 1
         if progress is not None:
-            progress(scanned, len(candidates), card["name"])
+            progress(scanned, len(candidates), card)
         gap = gap_for_card(card, lowerer)
         if gap is not None:
             return DiagnoseReport(set_code=set_code, scanned=scanned, gap=gap)

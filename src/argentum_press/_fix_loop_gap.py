@@ -77,6 +77,7 @@ def main(argv: list[str]) -> int:
     from .catalog import ScryfallCatalog
     from .diagnose import find_first_gap, format_ast, inspect_card
     from .lowerer import KotlinLowerer
+    from .parse_cache import is_cached
 
     with ScryfallCatalog() as catalog:
         _log(f"fetching {set_code} from Scryfall...")
@@ -86,11 +87,14 @@ def main(argv: list[str]) -> int:
         )
         _log(f"fetched {len(cards)} cards (catalog cache={cache_state})")
 
-        def _progress(scanned: int, total: int, card_name: str) -> None:
+        def _progress(scanned: int, total: int, card: dict) -> None:
             # One line per card before parse so the user sees what's being
-            # worked on — cache hits emit instantly, slow Earley parses
-            # leave the card name visible until the next one appears.
-            _log(f"[{scanned:>3}/{total}] {card_name}")
+            # worked on. The "parsing..." suffix flags cards that aren't in
+            # the cache so the user immediately knows which entry is about
+            # to sit through a 1-40s Earley parse vs which one will scroll
+            # past instantly.
+            tag = "" if is_cached(card) else "  (parsing...)"
+            _log(f"[{scanned:>3}/{total}] {card['name']}{tag}")
 
         _log("scanning for first gap...")
         report = find_first_gap(cards, project_dir, set_code, progress=_progress)

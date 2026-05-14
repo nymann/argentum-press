@@ -100,6 +100,20 @@ def _ensure_version() -> None:
     vfile.write_text(str(CACHE_VERSION), encoding="utf-8")
 
 
+def is_cached(card: dict[str, Any]) -> bool:
+    """Return True if ``card`` currently has a cache entry on disk.
+
+    Cheap stat — used by the fix-loop's progress display to mark cards
+    that will hit the cache vs cards facing a 1–40s cold Earley parse.
+    Returns False when the cache is disabled (so callers don't need to
+    branch on the env var themselves).
+    """
+    if not _enabled():
+        return False
+    pkl, _ = _paths(_key(card))
+    return pkl.exists()
+
+
 def cached_parse(card: dict[str, Any]) -> ParseResult:
     """Return the ``ParseResult`` for ``card``, using the disk cache when enabled.
 
@@ -181,4 +195,4 @@ def clear() -> None:
     shutil.rmtree(_cache_root(), ignore_errors=True)
 
 
-__all__ = ["cached_parse", "clear", "invalidate_label"]
+__all__ = ["cached_parse", "clear", "invalidate_label", "is_cached"]
