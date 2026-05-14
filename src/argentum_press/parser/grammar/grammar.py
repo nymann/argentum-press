@@ -35,8 +35,10 @@ def getGrammar():
         | modalstatement
         | activationrestrictionstatement
         | triggerrestrictionstatement
+        | manaspendablestatement
 
         activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
+        manaspendablestatement: "mana" "of" "any" "type" "can" "be" "spent" "to" "cast" "spells" "this" "way"
         triggerrestrictionstatement: declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?
 
         thenstatement: "then" statement
@@ -446,7 +448,7 @@ def getGrammar():
         | qualifier | modifier | locationexpression | valuecardinal | additionalexpression | characteristicexpression
         objectpostterm: withexpression | withoutexpression | choiceexpression | ofexpression | characteristicexpression | atrandomexpression
         | "that"? dealtdamageexpression | "that" doesnthaveexpression | controlpostfix | ownpostfix | putinzonepostfix | castpostfix | "that" ispostfix | targetspostfix
-        | "that" sharepostfix | namedexpression | otherthanexpression
+        | "that" sharepostfix | namedexpression | otherthanexpression | modifier
         otherthanexpression: "other" "than" declarationorreference
 
         //[TODO: Mana type declarations. Mana is now a first-class citizen!]
@@ -855,7 +857,7 @@ def getGrammar():
 
         ABILITYMODIFIER: "triggered" | "activated" | "mana" | "loyalty"
         COMBATSTATUSMODIFIER: "attacking" | "defending" | "attacked" | "blocking" | "blocked" | "active"
-        KEYWORDSTATUSMODIFIER: "paired" | "kicked" | "face-up" | "face-down" | "transformed" | "enchanted" | "equipped"
+        KEYWORDSTATUSMODIFIER: "paired" | "kicked" | "face-up" | "face-down" | "face up" | "face down" | "transformed" | "enchanted" | "equipped"
         | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" | "modified" | "different" // TODO: ensure 'suspected' works properly
         TAPPEDSTATUSMODIFIER: "tapped" | "untapped"
         EFFECTSTATUSMODIFIER: "named" | "chosen" | "chosen at random" | "revealed" | "returned" | "destroyed" | "exiled" | "died" | "countered" | "sacrificed"
@@ -866,7 +868,7 @@ def getGrammar():
 
         qualifier: QUALIFIER["s"]
         | "non" QUALIFIER -> nonqualifier
-        QUALIFIER: ("ability"|"abilities") | "card" | "permanent" | "source" | "spell" | "token" | "effect" | ("copy"|"copies")
+        QUALIFIER: ("ability"|"abilities") | "card" | "permanent" | "source" | "spell" | "token" | "effect" | ("copy"|"copies") | "rest"
 
         characteristicexpression: characteristicterms 
         | (characteristicterms (valueexpression|ptexpression) | (valueexpression|ptexpression) characteristicterms) -> characteristicvaluecompexpr
