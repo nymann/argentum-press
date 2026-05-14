@@ -106,6 +106,7 @@ from argentum_press.parser.ast import (
     FabricateAbility,
     FadingAbility,
     FlashbackAbility,
+    ForStatement,
     FortifyAbility,
     FrenzyAbility,
     GainLoseExpression,
@@ -1414,6 +1415,11 @@ class CardTransformer(Transformer):
 
     def atstatementinv(self, items):
         return AtStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def forstatementinv(self, items):
+        # statement "for" "each" (genericdeclarationexpression | "time" statement) ("beyond" "the" "first")?
+        consequence, conditional = items[0], items[1]
+        return ForStatement(conditional=conditional, consequence=consequence)
 
     def untiltimestatement(self, items):
         # "until" timeexpression "," statement
