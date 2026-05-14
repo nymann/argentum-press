@@ -363,3 +363,42 @@ def test_replay_requires_record_flag(
     monkeypatch.setenv("NO_COLOR", "1")
     rc = flp.main(["--replay", "anything"])
     assert rc == 2
+
+
+# ----------------------------------------------------------------------------
+# capture-batch (Phase 2)
+# ----------------------------------------------------------------------------
+
+
+from dataclasses import dataclass  # noqa: E402
+
+
+@dataclass
+class _FakeGap:
+    """Stand-in for ``argentum_press.diagnose.Gap`` — _auto_slug only reads
+    ``kind`` and ``label`` so we don't need to import the real dataclass
+    (which would drag in the parser)."""
+    kind: str
+    label: str
+
+
+def test_auto_slug_derives_safe_names() -> None:
+    """Each gap label shape produces the documented slug."""
+    assert flp._auto_slug(_FakeGap("parse", "parse-error:<EOF>@t8eb85b35")) \
+        == "parse-error-eof-t8eb85b35"
+    assert flp._auto_slug(_FakeGap("parse", "unmodeled-rule:abilityword")) \
+        == "unmodeled-rule-abilityword"
+    assert flp._auto_slug(
+        _FakeGap("lower", "argentum_press.parser.ast.expressions.ChooseExpression")
+    ) == "lower-chooseexpression"
+
+
+def test_auto_slug_collision_suffix(tmp_path: Path) -> None:
+    """Same slug twice gets -2 on the second; further collisions keep
+    incrementing."""
+    base = flp._auto_slug(_FakeGap("parse", "unmodeled-rule:foo"))
+    assert flp._unique_slug(base, tmp_path) == "unmodeled-rule-foo"
+    (tmp_path / f"{base}.json").write_text("{}")
+    assert flp._unique_slug(base, tmp_path) == "unmodeled-rule-foo-2"
+    (tmp_path / f"{base}-2.json").write_text("{}")
+    assert flp._unique_slug(base, tmp_path) == "unmodeled-rule-foo-3"
