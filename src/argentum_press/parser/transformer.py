@@ -1622,6 +1622,11 @@ class CardTransformer(Transformer):
     def zonedeclarationexpression(self, items):
         return items[-1]
 
+    def topbottomofzonedecl(self, items):
+        # "the" ("top" | "bottom") "of" zonedeclarationexpression
+        # Literal "top"/"bottom" tokens are filtered; pass through the inner zone.
+        return items[-1]
+
     def zone(self, items):
         # ZONE token -> Name carrying the surface form.
         return Name(name=str(items[0]))
