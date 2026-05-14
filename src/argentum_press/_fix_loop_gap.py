@@ -70,6 +70,23 @@ def _format_parse_error_block(details: Any) -> str | None:
     )
 
 
+def _read_skip_cards() -> set[str]:
+    """Read optional ``{"skip_cards": [...]}`` JSON from stdin.
+
+    The orchestrator's capture-batch path pipes a skip set in so each
+    iteration surfaces a different card. When stdin is a TTY (interactive
+    debug invocation) or empty (the regular fix-loop path) we return an
+    empty set. Malformed JSON is fatal — capture-batch would silently keep
+    re-capturing the same gap otherwise."""
+    if sys.stdin.isatty():
+        return set()
+    data = sys.stdin.read()
+    if not data.strip():
+        return set()
+    parsed = json.loads(data)
+    return set(parsed.get("skip_cards", []))
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(
@@ -79,6 +96,8 @@ def main(argv: list[str]) -> int:
         return 2
     set_code, project_dir_s = argv
     project_dir = Path(project_dir_s)
+
+    skip_cards = _read_skip_cards()
 
     from .catalog import ScryfallCatalog
     from .diagnose import find_first_gap, format_ast, inspect_card
@@ -107,10 +126,14 @@ def main(argv: list[str]) -> int:
             color = "red" if gap is not None else "green"
             _log(f"[{scanned:>3}/{total}] {mark} {card['name']}", color=color)
 
-        _log("scanning for first gap...")
+        if skip_cards:
+            _log(f"scanning for first gap... (skipping {len(skip_cards)} captured)")
+        else:
+            _log("scanning for first gap...")
         report = find_first_gap(
             cards, project_dir, set_code,
             progress=_before, on_complete=_after,
+            skip_names=skip_cards,
         )
 
         if report.gap is None:
