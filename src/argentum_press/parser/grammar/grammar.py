@@ -883,7 +883,7 @@ def getGrammar():
         | "rules text" | "abilities" | "power" | "toughness" | "base power" | "base toughness" | "loyalty" | "hand modifier" | "life modifier"
 
         //[TODO: Not quite done, there are expressions like 'a number of cards equal to [...]'. There's some overlapping responsibilities with descriptions involving cards, maybe.]
-        !cardexpression: ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?  
+        !cardexpression: possessiveterm? ("the" "top" | "the" "bottom")? (valueterm | thatmanyexpression | "a")? ("or" valueterm)? "card"["s"] ("from" "the" "top" | "from" "the" "bottom")? ("of" zonedeclarationexpression)?
 
         zonedeclarationexpression: (declarationdecorator* | referencedecorator*) zone
         zoneplacementmodifier: "in" "any" "order" -> anyorderplacement
