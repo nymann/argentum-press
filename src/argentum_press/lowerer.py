@@ -1034,6 +1034,14 @@ class KotlinLowerer:
         return "Effects.Cast()"
 
     @effect.register
+    def _(self, e: ast.UncastExpression) -> str:
+        # "counter <subject>" (kept internally as "uncast") — surface stub
+        # mirroring CastExpression; argentum-engine has no top-level effect
+        # surface for a counterspell yet. Emit a stub so the gap moves past
+        # UncastExpression.
+        return "Effects.Uncast()"
+
+    @effect.register
     def _(self, e: ast.ControlExpression) -> str:
         # "<controller> control(s)" — a decoration carrying only the
         # controller as a surface descriptor (e.g. "you control" appearing
