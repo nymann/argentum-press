@@ -749,7 +749,7 @@ def getGrammar():
 
         //TYPE/MANA/COLOR EXPRESSIONS, MODIFIERS, AND MISCELLANEOUS
 
-        timeexpression: startendspecifier? timeterm ("of" timeexpression)? ("on" possessiveterm timemodifier* PHASE)?
+        timeexpression: startendspecifier? timeterm ("of" timeexpression)? ("on" possessiveterm timemodifier* (PHASE | TURN))?
         | "for" "the" "first" "time" timeexpression -> firsttimetimeexpression
         startendspecifier: "the"? "beginning" "of" -> timebeginmodifier
         | "the"? "end" "of" -> timeendmodifier
