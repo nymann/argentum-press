@@ -42,6 +42,7 @@ from lark import Token, Transformer, Tree
 from lark.exceptions import LarkError, UnexpectedInput
 
 from argentum_press.parser.ast import (
+    AbilitySequenceStatement,
     AbsorbAbility,
     AffinityAbility,
     AfflictAbility,
@@ -54,6 +55,7 @@ from argentum_press.parser.ast import (
     AuraSwapAbility,
     AwakenAbility,
     BandingAbility,
+    BeingStatement,
     BestowAbility,
     BloodthirstAbility,
     BushidoAbility,
@@ -66,6 +68,7 @@ from argentum_press.parser.ast import (
     ColorExpression,
     CompoundStatement,
     CompoundTerminator,
+    ControlExpression,
     CostSequenceExpression,
     CrewAbility,
     CumulativeUpkeepAbility,
@@ -1101,6 +1104,23 @@ class CardTransformer(Transformer):
         # Day-one stand-in.
         return WithExpression(operand=items[0]) if items else WithExpression(operand=Name(name=""))
 
+    # -- Object-postterm postfixes -----------------------------------------
+
+    def controlpostfix(self, items):
+        # `<playerdeclref> control[s]` — e.g. "creatures you control".
+        return ControlExpression(controller=items[0])
+
+    def negativecontrolpostfix(self, items):
+        # `<playerdeclref> do/does not control` — e.g. "creatures you don't control".
+        return NonExpression(operand=ControlExpression(controller=items[0]))
+
+    def ownpostfix(self, items):
+        # `<playerdeclref> own[s]` — possession variant of controlpostfix.
+        return ControlExpression(controller=items[0])
+
+    def negativeownpostfix(self, items):
+        return NonExpression(operand=ControlExpression(controller=items[0]))
+
     def namedexpression(self, items):
         return NamedExpression(operand=items[0])
 
@@ -1134,6 +1154,25 @@ class CardTransformer(Transformer):
 
     def thenstatement(self, items):
         return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
+
+    def abilitysequencestatement(self, items):
+        # `flying`, `flying and haste`, `flying, vigilance, and trample`.
+        # Grammar yields one or more keyword abilities separated by `,` / `and`.
+        return AbilitySequenceStatement(abilities=tuple(items))
+
+    def beingstatement(self, items):
+        # Passthrough — beingstatement is the union (is/has/isnt/can/becomes/
+        # costchange/where), each of which has its own handler that returns
+        # the concrete dataclass.
+        return items[0]
+
+    def hasstatement(self, items):
+        # `<subject>? has <abilities-or-characteristic>` -> BeingStatement.
+        # The trailing item is always the RHS; an optional declref leads when
+        # the subject is explicit (e.g. "Other creatures you control have prowess.").
+        if len(items) == 1:
+            return BeingStatement(rhs=items[0])
+        return BeingStatement(lhs=items[0], rhs=items[1])
 
     # -- Compound statements ----------------------------------------------
 
@@ -1660,12 +1699,21 @@ def _preprocess(text: str, name: str | None) -> str:
     inline is cheap and lets us own the contract.
     """
     if name:
-        if "," in name:
-            head = name.split(",", 1)[0]
-            text = _ci_replace(text, name, "~f")
-            text = _ci_replace(text, head, "~")
-        else:
-            text = _ci_replace(text, name, "~")
+        # Alchemy variant cards are named "A-Foo" but their oracle text refers
+        # to the base name "Foo" (e.g. A-Heartfire Hero says "Heartfire Hero
+        # deals damage..."). Try the base name first when the A- prefix is
+        # present so the substitution actually fires.
+        candidates: list[str] = []
+        if name.startswith("A-"):
+            candidates.append(name[2:])
+        candidates.append(name)
+        for candidate in candidates:
+            if "," in candidate:
+                head = candidate.split(",", 1)[0]
+                text = _ci_replace(text, candidate, "~f")
+                text = _ci_replace(text, head, "~")
+            else:
+                text = _ci_replace(text, candidate, "~")
     for old, new in _CONTRACTION_REPLACEMENTS:
         text = _ci_replace(text, old, new)
     # Quoted-period sentinel: ".\"" -> ".\"."
