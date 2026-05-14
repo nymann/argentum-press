@@ -30,8 +30,9 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import datetime
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -355,140 +356,255 @@ def gather_context(
 # ---------------------------------------------------------------------------
 
 
-_COMMON_TAIL = """
-FILES YOU MAY EDIT
-  src/argentum_press/parser/transformer.py   (~1900 lines)
-  src/argentum_press/parser/ast/*.py         (frozen-dataclass AST nodes)
-  src/argentum_press/parser/grammar/grammar.py (~940 lines; only for parse-error)
-  src/argentum_press/lowerer.py              (AST -> Kotlin DSL)
-
-DISCIPLINE
-  - All needed signal is above. Don't re-run diagnose; the orchestrator runs
-    it again before the next iteration.
-  - Don't run pytest more than once unless you've made a follow-up edit.
-  - Don't commit; the orchestrator owns commits.
-  - For lowerer.py / transformer.py: grep before Read - they're 1k+ lines.
-  - The minimum edit to move this gap is the goal. No refactors, no
-    drive-by cleanup, no unrelated rule changes.
-
-WORKFLOW
-  1. Make the minimum edit.
-  2. Run pytest:
-     uv run pytest tests/test_diagnose.py tests/test_pipeline.py \\
-       tests/test_lowerer.py tests/test_classify.py -x -q -n auto
-  3. If pytest red, fix and re-run.
-"""
-
-
-def render_prompt_lower(ctx: GapContext) -> str:
-    parts = [
-        "Fix one lowerer gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text:",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=lower  label={ctx.label}",
-        "  An AST node parsed cleanly but lowerer.py has no @register handler",
-        "  for it. Add one handler. Do NOT change the AST or transformer.",
-        "",
-        "GAP AST CLASS DEFINITION (the fields the new handler will receive)",
-        ctx.gap_class_def or "  (not found in parser/ast/; grep src/ for it)",
-        "",
-        "PARSED AST FOR THIS CARD (where the gap node sits in the tree)",
-        _indent(ctx.ast_block or "(no AST)", "  "),
-        "",
-        "HANDLER MAP (every @<dispatcher>.register line in lowerer.py).",
-        "Pick a handler whose AST class is structurally similar to the GAP",
-        "AST CLASS above and mirror its body.",
-        _indent(ctx.handler_map or "(none)", "  "),
-        "",
-        "ENGINE DSL HINTS (Kotlin DSL surface in argentum-engine that already",
-        "exists for this kind of effect). Mirror existing DSL - do NOT invent.",
-        _indent(ctx.engine_hints or "(no matches)", "  "),
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING lowerer.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
-def render_prompt_parse_error(ctx: GapContext) -> str:
-    parts = [
-        "Fix one grammar gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text (raw):",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=parse  label={ctx.label}",
-        "  Lark itself rejected the preprocessed text. Either the grammar is",
-        "  missing a rule branch, or an existing rule needs a new alternative.",
-        "",
-        "PARSE ERROR DETAIL (extracted from the Lark exception; no need to",
-        "re-run the parser)",
-        ctx.parse_error_block or "  (details unavailable)",
-        "",
-        "GRAMMAR RULE INDEX (top of grammar.py; rule name -> 1-based line)",
-        ctx.grammar_index_excerpt or "  (none)",
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING grammar.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
-def render_prompt_unmodeled(ctx: GapContext) -> str:
-    parts = [
-        "Fix one transformer gap in argentum-press.",
-        "",
-        "CARD",
-        f"  name: {ctx.card_name}",
-        "  oracle text (raw):",
-        _indent(ctx.oracle_text, "    "),
-        "",
-        f"GAP  kind=parse  label={ctx.label}",
-        "  Lark parsed the text fine, but the transformer has no method for",
-        "  the named rule (raised via __default__ -> LoweringIncomplete).",
-        "  Add a transformer method; if a new AST dataclass is needed, add it",
-        "  to parser/ast/<file>.py and mirror its frozen/slots neighbors.",
-        "",
-        "GRAMMAR RULE DEFINITION (for the failing rule)",
-        _indent(ctx.rule_def or "(not found)", "  "),
-        "",
-        "WHERE THIS RULE IS USED in grammar.py (parent rules - their",
-        "transformer methods are the natural analogs to mirror)",
-        _indent(ctx.rule_uses or "(no other references)", "  "),
-        "",
-        "GRAMMAR RULE INDEX (rules near the target; rule name -> line)",
-        ctx.grammar_index_excerpt or "  (none)",
-        "",
-        "FILE SIZES",
-        ctx.file_sizes,
-        "",
-        "RECENT COMMITS TOUCHING transformer.py",
-        _indent(ctx.recent_commits, "  "),
-        _COMMON_TAIL,
-    ]
-    return "\n".join(parts)
-
-
 def render_prompt(ctx: GapContext) -> str:
+    """Backwards-compatible default: render with the baseline variant.
+
+    The main loop calls this when --prompt-variant is unset. ``--dry-run``
+    keeps the same shape too. New code should call _render_prompt_variant
+    directly so we have one place to add A/B logic.
+    """
+    return _render_prompt_variant("baseline", ctx)
+
+
+# ---------------------------------------------------------------------------
+# template-driven prompt variants (Phase 3)
+# ---------------------------------------------------------------------------
+#
+# Each variant lives under prompts/<variant>/ with three files:
+#   - lower.md          (lowerer-gap prompt)
+#   - parse-error.md    (lark rejected the preprocessed text)
+#   - unmodeled.md      (lark parsed but transformer has no rule method)
+#   - _common_tail.md   (boilerplate appended to every prompt)
+#
+# Placeholders use a minimal {{name}} syntax. We don't pull in jinja2 or
+# similar — the substitution domain is fixed and small, dependency-free
+# keeps the orchestrator easy to debug. Unknown placeholders raise so a
+# typo in a hand-edited variant surfaces immediately instead of silently
+# rendering as a literal `{{rule_def}}`.
+
+PROMPTS_DIR = REPO / "prompts"
+
+
+def _placeholders_for(ctx: GapContext) -> dict[str, str]:
+    """Build the substitution table for a single gap context.
+
+    All values are strings; multi-line blocks already include their internal
+    newlines. The ``_indented_N`` variants pre-bake the per-line indent
+    that the inline renderer used to compute via ``_indent(text, '  ' * N)``.
+    """
+    rule_def = ctx.rule_def or "(not found)"
+    rule_uses = ctx.rule_uses or "(no other references)"
+    gap_class_def = ctx.gap_class_def or "  (not found in parser/ast/; grep src/ for it)"
+    ast_block = ctx.ast_block or "(no AST)"
+    handler_map = ctx.handler_map or "(none)"
+    engine_hints = ctx.engine_hints or "(no matches)"
+    parse_error_block = ctx.parse_error_block or "  (details unavailable)"
+    grammar_index_excerpt = ctx.grammar_index_excerpt or "  (none)"
+    return {
+        "card_name": ctx.card_name,
+        "label": ctx.label,
+        "oracle_text": ctx.oracle_text,
+        "oracle_text_indented_4": _indent(ctx.oracle_text, "    "),
+        "gap_class_def": gap_class_def,
+        "ast_block_indented_2": _indent(ast_block, "  "),
+        "handler_map_indented_2": _indent(handler_map, "  "),
+        "engine_hints_indented_2": _indent(engine_hints, "  "),
+        "parse_error_block": parse_error_block,
+        "grammar_index_excerpt": grammar_index_excerpt,
+        "rule_def_indented_2": _indent(rule_def, "  "),
+        "rule_uses_indented_2": _indent(rule_uses, "  "),
+        "file_sizes": ctx.file_sizes,
+        "recent_commits_indented_2": _indent(ctx.recent_commits, "  "),
+    }
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _apply(template: str, values: dict[str, str]) -> str:
+    """Substitute every ``{{name}}`` in ``template`` with ``values[name]``.
+
+    Missing keys raise ``KeyError`` so a typo in a hand-edited variant
+    surfaces loudly instead of pasting ``{{rule_def}}`` into the agent's
+    prompt verbatim. (We don't escape ``{{`` — none of the prompt text
+    contains literal double braces.)
+    """
+    def repl(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        if name not in values:
+            raise KeyError(f"unknown prompt placeholder: {{{{ {name} }}}}")
+        return values[name]
+    return _PLACEHOLDER_RE.sub(repl, template)
+
+
+def _template_for(variant: str, kind: str) -> tuple[str, str]:
+    """Return ``(body_template, common_tail)`` for ``variant`` + ``kind``.
+
+    ``kind`` is one of ``lower``, ``parse-error``, ``unmodeled``. Trailing
+    newlines from the .md files are stripped so the join behaviour matches
+    the pre-refactor inline rendering byte-for-byte (baseline parity is a
+    test invariant).
+    """
+    base = PROMPTS_DIR / variant
+    if not base.is_dir():
+        raise FileNotFoundError(f"prompt variant '{variant}' has no directory under {PROMPTS_DIR}")
+    body_path = base / f"{kind}.md"
+    if not body_path.is_file():
+        raise FileNotFoundError(
+            f"prompt variant '{variant}' is missing {kind}.md (looked at {body_path})"
+        )
+    tail_path = base / "_common_tail.md"
+    body = body_path.read_text(encoding="utf-8").rstrip("\n")
+    tail = tail_path.read_text(encoding="utf-8").rstrip("\n") if tail_path.is_file() else ""
+    return body, tail
+
+
+def _render_prompt_variant(variant: str, ctx: GapContext) -> str:
+    """Dispatch to a prompt variant by name.
+
+    Templates live in ``prompts/<variant>/<kind>.md`` with ``{{name}}``
+    placeholders; the common tail (FILES YOU MAY EDIT, DISCIPLINE, WORKFLOW)
+    is shared across kinds via ``_common_tail.md``. Variant 'baseline' is
+    the in-repo default and reproduces the pre-Phase-3 inline rendering
+    byte-for-byte.
+    """
     if ctx.kind == "lower":
-        return render_prompt_lower(ctx)
-    if ctx.label.startswith("parse-error:"):
-        return render_prompt_parse_error(ctx)
-    return render_prompt_unmodeled(ctx)
+        kind = "lower"
+    elif ctx.label.startswith("parse-error:"):
+        kind = "parse-error"
+    else:
+        kind = "unmodeled"
+    body, tail = _template_for(variant, kind)
+    values = _placeholders_for(ctx)
+    values["common_tail"] = tail
+    return _apply(body, values)
+
+
+# ---------------------------------------------------------------------------
+# recording (Phase 0 instrumentation)
+# ---------------------------------------------------------------------------
+
+
+# Tool-use names we tally per iteration. Anything outside this set lands in the
+# generic "other" bucket — but we don't report "other" in the tsv columns,
+# which are explicitly named (n_reads, n_greps, …). Extending the tsv schema
+# is a breaking change for downstream summary tools, so add columns judiciously.
+_TRACKED_TOOLS = {"Read", "Grep", "Edit", "Write", "Bash"}
+
+
+RUNS_TSV_HEADER = (
+    "started_at\tcommit_before\tcommit_after\tgap_kind\tgap_label\tcard_name\t"
+    "scanned\tcost_usd\tnum_turns\twall_s\tn_reads\tn_greps\tn_edits\tn_writes\t"
+    "n_bash\toutcome\tdescription"
+)
+
+
+def _gap_slug(label: str) -> str:
+    """File-safe encoding of a gap label.
+
+    Labels are things like ``unmodeled-rule:colorandexpr`` or
+    ``parse-error:no terminal matches '@' …``. Slashes, colons, spaces, and
+    other punctuation become single underscores so the slug works as a path
+    component and roundtrips cleanly through TSVs.
+    """
+    if not label:
+        return "no-gap"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("_")
+    return (slug[:80] or "no-gap")
+
+
+def _iso_now() -> str:
+    """ISO-8601 UTC timestamp with no colons, safe as a path component."""
+    return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+@dataclass(slots=True)
+class IterationRecord:
+    """One row's worth of data, accumulated across an iteration.
+
+    The Recorder builds these and writes them as a tsv row after the iteration
+    settles (pass/abort/etc.). Counts default to 0 so a row is still well-formed
+    even when claude exits early before emitting any tool_use events.
+    """
+
+    started_at: str
+    commit_before: str
+    iter_n: int
+    gap_kind: str = ""
+    gap_label: str = ""
+    card_name: str = ""
+    scanned: int = 0
+    cost_usd: float = 0.0
+    num_turns: int = 0
+    wall_s: float = 0.0
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    commit_after: str = ""
+    outcome: str = ""
+    description: str = ""
+
+    def as_tsv_row(self) -> str:
+        tc = self.tool_counts
+        cells: list[str] = [
+            self.started_at,
+            self.commit_before,
+            self.commit_after,
+            self.gap_kind,
+            self.gap_label,
+            self.card_name,
+            str(self.scanned),
+            f"{self.cost_usd:.6f}",
+            str(self.num_turns),
+            f"{self.wall_s:.3f}",
+            str(tc.get("Read", 0)),
+            str(tc.get("Grep", 0)),
+            str(tc.get("Edit", 0)),
+            str(tc.get("Write", 0)),
+            str(tc.get("Bash", 0)),
+            self.outcome,
+            self.description.replace("\t", " ").replace("\n", " "),
+        ]
+        return "\t".join(cells)
+
+
+class Recorder:
+    """Per-record-dir state for Phase 0 instrumentation.
+
+    Lifecycle: ``start_iteration()`` returns an ``IterationRecord``; the caller
+    populates it as the iteration progresses, then calls ``finish_iteration``.
+    The recorder writes the TSV header on first use and appends one row per
+    finished iteration. Transcript and scan jsonl files are managed by helpers
+    (``scan_jsonl_path``, ``transcript_jsonl_path``) so the rest of the
+    orchestrator can stream directly to them.
+    """
+
+    def __init__(self, record_dir: Path) -> None:
+        self.record_dir = record_dir
+        self.record_dir.mkdir(parents=True, exist_ok=True)
+        self.runs_tsv = self.record_dir / "runs.tsv"
+        if not self.runs_tsv.exists():
+            self.runs_tsv.write_text(RUNS_TSV_HEADER + "\n", encoding="utf-8")
+
+    def start_iteration(self, iter_n: int) -> IterationRecord:
+        return IterationRecord(
+            started_at=_iso_now(),
+            commit_before=git("rev-parse", "HEAD", check=False) or "",
+            iter_n=iter_n,
+        )
+
+    def scan_jsonl_path(self, rec: IterationRecord, slug: str | None = None) -> Path:
+        # Slug is unknown at scan-time (the gap hasn't been found yet), so
+        # callers pass "scan" as a sentinel until a real label is available.
+        # Append "-scan" so the scan file and the transcript file never collide.
+        s = slug or "scan"
+        return self.record_dir / f"{rec.started_at}-{rec.iter_n:03d}-{s}.scan.jsonl"
+
+    def transcript_jsonl_path(self, rec: IterationRecord, slug: str) -> Path:
+        return self.record_dir / f"{rec.started_at}-{rec.iter_n:03d}-{slug}.jsonl"
+
+    def finish_iteration(self, rec: IterationRecord) -> None:
+        rec.commit_after = git("rev-parse", "HEAD", check=False) or rec.commit_before
+        with self.runs_tsv.open("a", encoding="utf-8") as f:
+            f.write(rec.as_tsv_row() + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -496,19 +612,34 @@ def render_prompt(ctx: GapContext) -> str:
 # ---------------------------------------------------------------------------
 
 
-def stream_claude(prompt: str) -> tuple[int, str]:
+def stream_claude(
+    prompt: str,
+    *,
+    transcript_path: Path | None = None,
+    record: IterationRecord | None = None,
+    claude_cmd: list[str] | None = None,
+) -> tuple[int, str]:
     """Pipe ``prompt`` to ``claude -p`` and render its stream-json output.
 
     Returns (exit_code, last_assistant_text). The last assistant text is the
     agent's final summary, used as the body of the per-iteration commit.
+
+    When ``transcript_path`` is set, every raw NDJSON line received from claude
+    is appended verbatim — preserving the exact wire format so replay analysis
+    can re-render it identically. When ``record`` is set, per-event metrics
+    (tool-use counts, cost, num_turns, wall_s) are folded into the record in
+    place. ``claude_cmd`` lets tests swap in a shim binary; production code
+    passes None and gets the real ``claude -p`` invocation.
     """
+    cmd = claude_cmd or [
+        "claude", "-p",
+        "--dangerously-skip-permissions",
+        "--output-format", "stream-json",
+        "--verbose",
+    ]
+    t_start = time.monotonic()
     proc = subprocess.Popen(
-        [
-            "claude", "-p",
-            "--dangerously-skip-permissions",
-            "--output-format", "stream-json",
-            "--verbose",
-        ],
+        cmd,
         cwd=REPO,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -520,33 +651,54 @@ def stream_claude(prompt: str) -> tuple[int, str]:
     proc.stdin.write(prompt)
     proc.stdin.close()
 
+    transcript_fh = transcript_path.open("a", encoding="utf-8") if transcript_path else None
     last_text = ""
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        if not line.strip():
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            stamp(f"{DIM}{line[:240]}{RESET}")
-            continue
-        text = _render_event(ev)
-        if text is not None:
-            # Tool results are visually attached to the preceding tool_use
-            # (often multi-line file content, sometimes 20+ lines). A second
-            # [HH:MM:SS] on the first line of that block reads as a separate
-            # event, fights with the highlighting, and adds nothing — the
-            # tool_use stamp already carries the time. Print bare so the
-            # output sits cleanly under its command.
-            if ev.get("type") == "user":
-                print(text, flush=True)
-            else:
-                stamp(text)
-        if ev.get("type") == "assistant":
-            for c in ev.get("message", {}).get("content", []) or []:
-                if c.get("type") == "text":
-                    last_text = c.get("text", "") or last_text
-    proc.wait()
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if transcript_fh is not None and line.strip():
+                # Mirror raw bytes (one event per line) so downstream replay
+                # tooling sees the same wire format the orchestrator saw.
+                transcript_fh.write(line + "\n")
+                transcript_fh.flush()
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                stamp(f"{DIM}{line[:240]}{RESET}")
+                continue
+            text = _render_event(ev)
+            if text is not None:
+                # Tool results are visually attached to the preceding tool_use
+                # (often multi-line file content, sometimes 20+ lines). A second
+                # [HH:MM:SS] on the first line of that block reads as a separate
+                # event, fights with the highlighting, and adds nothing — the
+                # tool_use stamp already carries the time. Print bare so the
+                # output sits cleanly under its command.
+                if ev.get("type") == "user":
+                    print(text, flush=True)
+                else:
+                    stamp(text)
+            if ev.get("type") == "assistant":
+                for c in ev.get("message", {}).get("content", []) or []:
+                    if c.get("type") == "text":
+                        last_text = c.get("text", "") or last_text
+                    elif c.get("type") == "tool_use" and record is not None:
+                        name = c.get("name") or ""
+                        if name in _TRACKED_TOOLS:
+                            record.tool_counts[name] = (
+                                record.tool_counts.get(name, 0) + 1
+                            )
+            elif ev.get("type") == "result" and record is not None:
+                record.cost_usd = float(ev.get("total_cost_usd", 0) or 0)
+                record.num_turns = int(ev.get("num_turns", 0) or 0)
+        proc.wait()
+    finally:
+        if transcript_fh is not None:
+            transcript_fh.close()
+    if record is not None:
+        record.wall_s = time.monotonic() - t_start
     return proc.returncode, last_text
 
 
@@ -913,7 +1065,9 @@ class GapSubprocessError(RuntimeError):
 
 
 def _find_gap_subprocess(
-    set_code: str, project_dir: Path
+    set_code: str, project_dir: Path,
+    *,
+    scan_jsonl_path: Path | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Run gap-finding in a fresh subprocess so the agent's last edits take
     effect. Returns ``(gap, ast_text, parse_error_block)`` — ``gap`` is None
@@ -930,6 +1084,10 @@ def _find_gap_subprocess(
     Inherits ``ARGENTUM_PARSE_CACHE`` (and any sibling env) so the worker
     populates the same parse cache the orchestrator's invalidate-after-fix
     pruning operates on.
+
+    When ``scan_jsonl_path`` is set, every NDJSON line emitted by the worker
+    is mirrored verbatim into that file — separate from the agent transcript
+    so the scan timeline can be reconstructed independently.
     """
     cmd = [
         "uv", "run", "python", "-m", "argentum_press._fix_loop_gap",
@@ -945,29 +1103,37 @@ def _find_gap_subprocess(
     )
     assert proc.stdout and proc.stderr
 
+    scan_fh = scan_jsonl_path.open("a", encoding="utf-8") if scan_jsonl_path else None
     result_event: dict[str, Any] | None = None
-    for raw in proc.stdout:
-        line = raw.rstrip("\n").strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            # Non-JSON output (e.g. a stray print) — surface it but don't
-            # treat it as fatal.
-            stamp(f"{DIM}{line[:240]}{RESET}")
-            continue
-        et = event.get("type")
-        if et == "log":
-            # Map the worker's named color → local ANSI constant; default
-            # is DIM. _ansi() already gates on TTY/NO_COLOR upstream, so
-            # color names safely degrade to empty strings off-tty.
-            color_name = event.get("color")
-            color_map = {"green": GREEN, "red": RED, "yellow": YELLOW, "cyan": CYAN}
-            prefix = color_map.get(color_name, DIM)
-            stamp(f"{prefix}{event.get('msg', '')}{RESET}")
-        elif et == "result":
-            result_event = event
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n").strip()
+            if not line:
+                continue
+            if scan_fh is not None:
+                scan_fh.write(line + "\n")
+                scan_fh.flush()
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # Non-JSON output (e.g. a stray print) — surface it but don't
+                # treat it as fatal.
+                stamp(f"{DIM}{line[:240]}{RESET}")
+                continue
+            et = event.get("type")
+            if et == "log":
+                # Map the worker's named color → local ANSI constant; default
+                # is DIM. _ansi() already gates on TTY/NO_COLOR upstream, so
+                # color names safely degrade to empty strings off-tty.
+                color_name = event.get("color")
+                color_map = {"green": GREEN, "red": RED, "yellow": YELLOW, "cyan": CYAN}
+                prefix = color_map.get(color_name, DIM)
+                stamp(f"{prefix}{event.get('msg', '')}{RESET}")
+            elif et == "result":
+                result_event = event
+    finally:
+        if scan_fh is not None:
+            scan_fh.close()
 
     stderr_output = proc.stderr.read()
     proc.wait()
@@ -998,15 +1164,285 @@ def _find_gap_subprocess(
     return gap, result_event.get("ast"), result_event.get("parse_error_block")
 
 
-def main() -> int:
+# ---------------------------------------------------------------------------
+# captured-gap library (Phase 1: --capture-gap / --replay)
+# ---------------------------------------------------------------------------
+
+# Captured gaps live here so the experiment runner can iterate over the
+# library without hard-coding paths. ``experiments/gaps/<slug>.json`` is the
+# canonical layout; ``experiments/runs/<tag>/`` holds --record output. Tests
+# override via ARGENTUM_GAPS_DIR so the unit suite doesn't pollute the
+# real library.
+def _gaps_dir() -> Path:
+    override = os.environ.get("ARGENTUM_GAPS_DIR")
+    return Path(override) if override else REPO / "experiments" / "gaps"
+
+
+# Read at module import time for backwards-compat in places that import the
+# constant directly. Tests that need to redirect call sites should both set
+# the env var AND use ``_gaps_dir()`` rather than this attribute.
+GAPS_DIR = _gaps_dir()
+
+
+def _capture_gap(set_code: str, project_dir: Path, slug: str) -> int:
+    """Run the gap finder once and persist the result under
+    ``experiments/gaps/<slug>.json``.
+
+    No claude call, no commit. The captured JSON carries everything the
+    replay path needs to reconstruct the same iteration input: gap kind +
+    label, card name + oracle text, optional AST text + parse-error block,
+    and the commit HEAD was at when the capture ran (so replay can refuse to
+    run against a drifted parser state).
+    """
+    print(f"{BOLD}=== capture-gap {slug} ==={RESET}", flush=True)
+    try:
+        gap, ast_text, pe_block = _find_gap_subprocess(set_code, project_dir)
+    except GapSubprocessError as e:
+        stamp(f"{RED}{e}{RESET}")
+        return 2
+    if gap is None:
+        stamp(f"{YELLOW}no gap found; nothing to capture.{RESET}")
+        return 1
+
+    gaps_dir = _gaps_dir()
+    gaps_dir.mkdir(parents=True, exist_ok=True)
+    out = gaps_dir / f"{slug}.json"
+    payload: dict[str, Any] = {
+        "set_code": set_code,
+        "gap": {
+            "kind": gap.kind,
+            "label": gap.label,
+            "card_name": gap.card_name,
+            "oracle_text": gap.oracle_text,
+        },
+        "ast_text": ast_text,
+        "parse_error_block": pe_block,
+        "ref_commit": git("rev-parse", "HEAD", check=False) or "",
+    }
+    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    stamp(f"{GREEN}captured gap '{slug}' → {out.relative_to(REPO)}{RESET}")
+    stamp(f"  kind={gap.kind}  card={gap.card_name}  label={gap.label.splitlines()[0]}")
+    return 0
+
+
+def _load_gap(slug: str) -> dict[str, Any]:
+    path = _gaps_dir() / f"{slug}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"no captured gap at {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _snapshot_worktree() -> tuple[str, str]:
+    """Capture HEAD + the current ``git status --porcelain`` so the replay
+    cleanup can detect any working-tree change the agent introduced and
+    restore the pre-replay state.
+
+    Returns ``(head_sha, porcelain_text)``. Replay restores by hard-resetting
+    to HEAD and dropping any new untracked files the agent created.
+    """
+    head = git("rev-parse", "HEAD")
+    porcelain = git("status", "--porcelain")
+    return head, porcelain
+
+
+def _restore_worktree(head: str) -> None:
+    """Hard-reset to ``head`` and wipe untracked files.
+
+    Replay is supposed to leave no trace; the agent may have edited tracked
+    files (caught by ``reset --hard``) and/or created new ones (caught by
+    ``clean -fd``). We don't touch the parse cache or anything outside the
+    repo. The user accepted this explicitly: replay is destructive on
+    purpose, and only runs on the dedicated experiment branch.
+
+    Honors ``ARGENTUM_FIX_LOOP_NO_RESTORE=1`` as a kill-switch for tests:
+    the integration test invokes a real subprocess where monkeypatching
+    can't reach, and we explicitly don't want it nuking work-in-progress
+    code on a dev checkout.
+    """
+    if os.environ.get("ARGENTUM_FIX_LOOP_NO_RESTORE") == "1":
+        return
+    git("reset", "--hard", head, check=False)
+    git("clean", "-fd", check=False)
+
+
+def _run_replay(
+    *,
+    slug: str,
+    recorder: Recorder,
+    description: str,
+    prompt_variant: str,
+    dry_run: bool,
+    claude_cmd: list[str] | None,
+    skip_pytest: bool = False,
+) -> int:
+    """Run one fix-loop iteration against a saved gap and restore worktree.
+
+    The replay path deliberately skips: (a) the gap subprocess (we use the
+    saved input verbatim), (b) the commit (replay is throwaway), and (c) the
+    parse-cache invalidation (any cache state we touched gets blown away by
+    the worktree restore anyway). Pytest still runs as a verification gate
+    so a replay row in runs.tsv has a real outcome.
+    """
+    print(f"\n{BOLD}=== replay {slug} ==={RESET}", flush=True)
+    try:
+        payload = _load_gap(slug)
+    except FileNotFoundError as e:
+        print(f"{RED}{e}{RESET}", file=sys.stderr)
+        return 2
+
+    head_now = git("rev-parse", "HEAD")
+    ref_commit = payload.get("ref_commit") or ""
+    if ref_commit and ref_commit != head_now:
+        print(
+            f"{RED}replay aborted: gap '{slug}' was captured against "
+            f"{ref_commit[:12]}, but HEAD is {head_now[:12]}.{RESET}\n"
+            f"  Check out the capture commit before replaying.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from argentum_press.diagnose import Gap
+
+    gap_data = payload["gap"]
+    gap = Gap(
+        kind=gap_data["kind"],
+        label=gap_data["label"],
+        card_name=gap_data["card_name"],
+        oracle_text=gap_data["oracle_text"],
+        parse_details=None,
+    )
+    set_code = payload.get("set_code", "")
+    project_dir = Path(payload.get("project_dir", REPO))  # purely for engine hints
+    ast_text = payload.get("ast_text")
+    pe_block = payload.get("parse_error_block")
+
+    ctx = gather_context(
+        set_code=set_code,
+        project_dir=project_dir,
+        kind=gap.kind,
+        label=gap.label,
+        card_name=gap.card_name,
+        oracle_text=gap.oracle_text,
+        ast_text=ast_text,
+        parse_error_block=pe_block,
+    )
+
+    prompt = _render_prompt_variant(prompt_variant, ctx)
+    if dry_run:
+        print(prompt)
+        return 0
+
+    rec = recorder.start_iteration(1)
+    rec.gap_kind = gap.kind
+    rec.gap_label = gap.label
+    rec.card_name = gap.card_name
+    transcript_path = recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+    # description carries the variant tag so a runs.tsv row is enough to know
+    # which prompt produced it without grep'ing back through the script flags.
+    rec.description = f"{description}|variant={prompt_variant}|replay={slug}" if description \
+        else f"variant={prompt_variant}|replay={slug}"
+
+    stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
+          f"label={gap.label.splitlines()[0]}")
+
+    snap_head, _ = _snapshot_worktree()
+    try:
+        rc, _ = stream_claude(
+            prompt,
+            transcript_path=transcript_path,
+            record=rec,
+            claude_cmd=claude_cmd,
+        )
+        if rc != 0:
+            stamp(f"{RED}claude exited {rc}; recording as claude_error.{RESET}")
+            rec.outcome = "claude_error"
+            recorder.finish_iteration(rec)
+            return rc
+
+        if skip_pytest:
+            stamp(f"{DIM}skipping pytest (--skip-pytest).{RESET}")
+            rec.outcome = "pass"
+            recorder.finish_iteration(rec)
+        else:
+            stamp(f"{DIM}running pytest...{RESET}")
+            pytest_rc, output = run_pytest()
+            if pytest_rc != 0:
+                stamp(f"{RED}pytest red after replay edit; recording abort_pytest.{RESET}")
+                print(output[-2000:], file=sys.stderr)
+                rec.outcome = "abort_pytest"
+                recorder.finish_iteration(rec)
+                return 0  # replay aborted-pytest is informational, not fatal
+            stamp(f"{GREEN}pytest green.{RESET}")
+            rec.outcome = "pass"
+            recorder.finish_iteration(rec)
+    finally:
+        # Restore the worktree no matter what; replay is supposed to be
+        # idempotent. Important: do this AFTER finish_iteration so the
+        # rec.commit_after column reflects the (unchanged) HEAD before
+        # we reset.
+        _restore_worktree(snap_head)
+        stamp(f"{DIM}worktree restored to {snap_head[:12]}{RESET}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("set_code")
-    ap.add_argument("project_dir", type=Path)
+    ap.add_argument("set_code", nargs="?", default="",
+                    help="Scryfall set code. Ignored when --replay is set.")
+    ap.add_argument("project_dir", type=Path, nargs="?", default=REPO,
+                    help="Path to argentum-engine. Ignored when --replay is set.")
     ap.add_argument("--max-iter", type=int, default=0, help="0 = unbounded")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-commit", action="store_true")
     ap.add_argument("--allow-dirty", action="store_true")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--record", type=Path, default=None,
+        help="Directory to stream per-iteration NDJSON transcripts + runs.tsv into.",
+    )
+    ap.add_argument(
+        "--replay", type=str, default=None,
+        help="Slug of a saved gap under experiments/gaps/<slug>.json to replay "
+             "instead of running the live gap finder. Requires --record. "
+             "Restores the working tree after the iteration; does not commit.",
+    )
+    ap.add_argument(
+        "--capture-gap", dest="capture_gap", type=str, default=None,
+        help="Run the gap finder once, save the gap to experiments/gaps/<slug>.json, "
+             "and exit without invoking claude.",
+    )
+    ap.add_argument(
+        "--prompt-variant", type=str, default="baseline",
+        help="Name under prompts/ to use for the agent prompt (default: baseline).",
+    )
+    ap.add_argument(
+        "--description", type=str, default="",
+        help="Free-text label propagated into the runs.tsv description column.",
+    )
+    ap.add_argument(
+        "--claude-cmd", type=str, default=None,
+        help="JSON-encoded list of argv strings overriding the default ``claude -p`` "
+             "invocation. Tests use this to point at a fake-claude shim.",
+    )
+    ap.add_argument(
+        "--skip-pytest", action="store_true",
+        help="Skip the post-agent pytest gate. Replay mode + experiment runner "
+             "use this to keep wall-clock noise down when the agent is a no-op "
+             "shim; production runs leave it off.",
+    )
+    args = ap.parse_args(argv)
+
+    if args.capture_gap is not None:
+        if not args.set_code:
+            print(f"{RED}--capture-gap requires set_code positional.{RESET}", file=sys.stderr)
+            return 2
+        return _capture_gap(args.set_code, args.project_dir, args.capture_gap)
+
+    if args.replay is not None and args.record is None:
+        print(
+            f"{RED}--replay requires --record (replay only makes sense with measurement).{RESET}",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.allow_dirty and git_dirty():
         print(
@@ -1014,6 +1450,38 @@ def main() -> int:
             f"  (pass --allow-dirty to override)",
             file=sys.stderr,
         )
+        return 2
+
+    claude_cmd: list[str] | None = None
+    if args.claude_cmd:
+        claude_cmd = json.loads(args.claude_cmd)
+
+    recorder = Recorder(args.record) if args.record else None
+
+    def _desc() -> str:
+        # Prepend the variant tag to the user-supplied description so a
+        # runs.tsv row's description column tells the full story (a tag
+        # like 'variant=h1-no-handler-map|seed-42' is greppable; the
+        # bare user description without it isn't).
+        head = f"variant={args.prompt_variant}"
+        if args.description:
+            return f"{head}|{args.description}"
+        return head
+
+    if args.replay is not None:
+        assert recorder is not None
+        return _run_replay(
+            slug=args.replay,
+            recorder=recorder,
+            description=args.description,
+            prompt_variant=args.prompt_variant,
+            dry_run=args.dry_run,
+            claude_cmd=claude_cmd,
+            skip_pytest=args.skip_pytest,
+        )
+
+    if not args.set_code:
+        print(f"{RED}set_code positional is required.{RESET}", file=sys.stderr)
         return 2
 
     prev_label = ""
@@ -1025,18 +1493,33 @@ def main() -> int:
             return 0
         print(f"\n{BOLD}=== iteration {i} ==={RESET}", flush=True)
 
+        rec = recorder.start_iteration(i) if recorder else None
+        scan_path = recorder.scan_jsonl_path(rec) if (recorder and rec) else None
+
         try:
             gap, ast_text, pe_block = _find_gap_subprocess(
-                args.set_code, args.project_dir
+                args.set_code, args.project_dir,
+                scan_jsonl_path=scan_path,
             )
         except GapSubprocessError as e:
             stamp(f"{RED}{e}{RESET}")
+            if recorder and rec:
+                rec.outcome = "abort_subprocess"
+                rec.description = _desc()
+                recorder.finish_iteration(rec)
             return 2
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
         if gap.label == prev_label:
             stamp(f"{RED}no progress: label '{gap.label}' twice in a row. abort.{RESET}")
+            if recorder and rec:
+                rec.gap_kind = gap.kind
+                rec.gap_label = gap.label
+                rec.card_name = gap.card_name
+                rec.outcome = "abort_no_progress"
+                rec.description = _desc()
+                recorder.finish_iteration(rec)
             return 2
 
         ctx = gather_context(
@@ -1053,14 +1536,31 @@ def main() -> int:
         stamp(f"{YELLOW}gap{RESET} kind={gap.kind}  card={gap.card_name}  "
               f"label={gap.label.splitlines()[0]}")
 
-        prompt = render_prompt(ctx)
+        prompt = _render_prompt_variant(args.prompt_variant, ctx)
         if args.dry_run:
             print(prompt)
             return 0
 
-        rc, summary = stream_claude(prompt)
+        if rec is not None and recorder is not None:
+            rec.gap_kind = gap.kind
+            rec.gap_label = gap.label
+            rec.card_name = gap.card_name
+            transcript_path = recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+        else:
+            transcript_path = None
+
+        rc, summary = stream_claude(
+            prompt,
+            transcript_path=transcript_path,
+            record=rec,
+            claude_cmd=claude_cmd,
+        )
         if rc != 0:
             stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
+            if recorder and rec:
+                rec.outcome = "claude_error"
+                rec.description = _desc()
+                recorder.finish_iteration(rec)
             return rc
 
         stamp(f"{DIM}running pytest...{RESET}")
@@ -1068,6 +1568,10 @@ def main() -> int:
         if rc != 0:
             stamp(f"{RED}pytest red after agent edit; abort.{RESET}")
             print(output[-2000:], file=sys.stderr)
+            if recorder and rec:
+                rec.outcome = "abort_pytest"
+                rec.description = _desc()
+                recorder.finish_iteration(rec)
             return rc
         stamp(f"{GREEN}pytest green.{RESET}")
 
@@ -1090,6 +1594,11 @@ def main() -> int:
             from argentum_press.parse_cache import invalidate_label
             removed = invalidate_label(gap.label)
             stamp(f"{DIM}parse-cache: invalidated {removed} entr(ies) for '{gap.label}'{RESET}")
+
+        if recorder and rec:
+            rec.outcome = "pass"
+            rec.description = _desc()
+            recorder.finish_iteration(rec)
 
         prev_label = gap.label
 

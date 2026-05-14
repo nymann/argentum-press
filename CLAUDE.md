@@ -92,3 +92,19 @@ against — see `issues/parser-small-fixes.md` for the reasoning.)
 The orchestrator owns commits — the per-iteration `claude -p`
 sessions must not commit (they get a fresh context each time and
 have no view of the prior iteration's work).
+
+## Experiments
+
+Reproducible fix-loop measurement under `experiments/`. `--record` writes
+per-iteration NDJSON + a `runs.tsv` row; replay re-runs one saved gap so
+prompt-variant edits produce comparable deltas. Templates live under
+`prompts/<variant>/{lower,parse-error,unmodeled}.md`.
+
+- `--record experiments/runs/<tag>/` — capture on a live run.
+- `--capture-gap <slug>` — save the next gap to `experiments/gaps/`.
+- `--replay <slug>` — re-run one saved gap; restores worktree after. Refuses
+  to run when HEAD drifted from `ref_commit`.
+- `--prompt-variant <name>` — default `baseline`.
+- `scripts/run_experiment.py --tag <t> --repeats N` — gaps × repeats, plus
+  a `summary.tsv` rollup.
+- `scripts/diff_experiments.py A.tsv B.tsv` — per-gap deltas, improvement green.
