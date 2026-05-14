@@ -778,6 +778,15 @@ class KotlinLowerer:
         # ChoiceExpression to whatever the next unhandled node is.
         return "Effects.Choose()"
 
+    @effect.register
+    def _(self, e: ast.CreateTokenExpression) -> str:
+        # "create <N?> <descriptor>" — the rich AST carries the token as a
+        # surface DescriptionExpression (e.g. "Food token") without power/
+        # toughness/colors, so we can't fill argentum-engine's
+        # Effects.CreateToken(power, toughness, ...) signature. Emit a stub
+        # so the gap moves past CreateTokenExpression.
+        return "Effects.CreateToken()"
+
     # ---- targets ----------------------------------------------------------
     #
     # The rich AST encodes targets primarily as TargetExpression; self-
