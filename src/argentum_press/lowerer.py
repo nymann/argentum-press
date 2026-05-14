@@ -70,6 +70,7 @@ _TRIGGER_KOTLIN: dict[str, str] = {
     "cast": "YouCastSpell",
     "deals damage": "DealsDamage",
     "dies": "Dies",
+    "discard": "YouDiscard",
     "draw": "YouDraw",
     "enters": "EntersBattlefield",
     "leaves": "LeavesBattlefield",
@@ -123,6 +124,12 @@ def _find_trigger_marker(node: Any) -> str:
         # gap moves past DiesExpression. Subject-qualified variants
         # (AnyCreatureDies / YourCreatureDies / ...) are a separate gap.
         return "dies"
+    if isinstance(node, ast.DiscardExpression):
+        # "<player>? discard(s) <subject> at random?" as a trigger condition
+        # (e.g. "whenever you discard a card"). The rich AST carries
+        # player / subject / at_random as surface fields; map to a stub
+        # YouDiscard trigger so the gap moves past DiscardExpression.
+        return "discard"
     if isinstance(node, ast.DescriptionExpression):
         parts = [_find_trigger_marker(d) for d in node.descriptors]
         for p in parts:
