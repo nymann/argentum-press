@@ -1895,6 +1895,9 @@ class CardTransformer(Transformer):
     def puremanaexpression(self, items):
         return items[0]
 
+    def manadescriptionexpression(self, items):
+        return items[0]
+
     def manasymbol(self, items):
         return items[0]
 
