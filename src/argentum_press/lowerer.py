@@ -132,6 +132,15 @@ def _trigger_kotlin_name(condition: Any) -> str:
     # statement wrapper.
     if isinstance(condition, ast.ExpressionStatement):
         raise EmitterGap(condition.root)
+    if isinstance(condition, ast.DiesExpression):
+        # No subject means the dying creature is self (~); engine binds via TriggerBinding.SELF.
+        # The optional `timing` field doesn't change the underlying ZoneChangeEvent, so we ignore it.
+        if condition.subject is None:
+            return "Dies"
+        # Subject-qualified dies ("another creature", "a creature you control", subtype-scoped, ...)
+        # need a closer look before picking between AnyCreatureDies / AnyOtherCreatureDies /
+        # YourCreatureDies / OtherCreatureWithSubtypeDies. Surface the next gap.
+        raise EmitterGap(condition)
     raise EmitterGap(condition)
 
 
