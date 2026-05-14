@@ -103,7 +103,12 @@ def _trigger_kotlin_name(condition: Any) -> str:
     if name is not None:
         return name
     # Surface the rich condition node itself so the gap report points at
-    # the unmodeled shape rather than the wrapper TriggeredAbility.
+    # the unmodeled shape rather than the wrapper TriggeredAbility. Unwrap
+    # an ExpressionStatement so the report names the inner expression
+    # (CastExpression, DealsDamageExpression, ...) rather than the generic
+    # statement wrapper.
+    if isinstance(condition, ast.ExpressionStatement):
+        raise EmitterGap(condition.root)
     raise EmitterGap(condition)
 
 
