@@ -179,6 +179,12 @@ def _classify_type_operand(node: Any) -> str:
             if kind != "unknown":
                 return kind
         return "unknown"
+    if isinstance(node, ast.AndOrExpression):
+        for side in (node.lhs, node.rhs):
+            kind = _classify_type_operand(side)
+            if kind != "unknown":
+                return kind
+        return "unknown"
     return "unknown"
 
 
@@ -801,6 +807,8 @@ class KotlinLowerer:
             return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AsStatement):
             return self._effects_from_statement(stmt.consequence)
+        if isinstance(stmt, ast.AsLongAsStatement):
+            return self._effects_from_statement(stmt.consequence)
         if isinstance(stmt, ast.AtStatement):
             # "at the beginning of <step>, <Y>" — a phase-based trigger. The
             # rich AST carries the trigger phase as a surface DescriptionExpression
@@ -845,6 +853,13 @@ class KotlinLowerer:
             # has no top-level except-replacement Effect surface yet. Emit a
             # stub so the gap moves past ExceptStatement.
             return ("Effects.Except()",)
+        if isinstance(stmt, ast.TriggerRestrictionStatement):
+            # "this ability triggers only once each turn" — caps the trigger
+            # frequency of a sibling triggered ability in the same RegularAbility
+            # block. argentum-engine has no top-level trigger-restriction Effect
+            # surface yet; emit a stub so the gap moves past
+            # TriggerRestrictionStatement to whatever the next unhandled node is.
+            return ("Effects.TriggerRestriction()",)
         if isinstance(stmt, ast.ModalExpression):
             # "choose one — • <option1> • <option2>" — the rich AST carries
             # each modal option as a ModalChoice with its own block, and the
@@ -895,6 +910,11 @@ class KotlinLowerer:
     def _(self, e: ast.DestroyExpression) -> str:
         target_str = self._target_from_expression(e.subject)
         return f"Effects.Destroy({target_str})"
+
+    @effect.register
+    def _(self, e: ast.ExileExpression) -> str:
+        target_str = self._target_from_expression(e.subject)
+        return f"Effects.Exile({target_str})"
 
     @effect.register
     def _(self, e: ast.LookExpression) -> str:
@@ -986,6 +1006,14 @@ class KotlinLowerer:
         # stub so the gap moves past ControlExpression to whatever the next
         # unhandled node is.
         return "Effects.Control()"
+
+    @effect.register
+    def _(self, e: ast.ConniveExpression) -> str:
+        # "<player>? connive[s]" — surface-only stub mirroring
+        # GainLoseExpression; the rich AST drops subject/amount, so we emit
+        # a stub call so the gap moves past ConniveExpression to whatever
+        # the next unhandled node is.
+        return "Effects.Connive()"
 
     # ---- targets ----------------------------------------------------------
     #

@@ -55,6 +55,7 @@ from argentum_press.parser.ast import (
     AndOrExpression,
     AnnihilatorAbility,
     AnyColorSpecifier,
+    AsLongAsStatement,
     AsStatement,
     AtStatement,
     AuraSwapAbility,
@@ -74,6 +75,7 @@ from argentum_press.parser.ast import (
     ColorExpression,
     CompoundStatement,
     CompoundTerminator,
+    ConniveExpression,
     ControlExpression,
     CopyExpression,
     CostIncreaseStatement,
@@ -186,6 +188,7 @@ from argentum_press.parser.ast import (
     TransfigureAbility,
     TransmuteAbility,
     TributeAbility,
+    TriggerRestrictionStatement,
     TriggeredAbility,
     TypeExpression,
     UncastExpression,
@@ -1073,6 +1076,13 @@ class CardTransformer(Transformer):
             result = AndExpression(lhs=item, rhs=result)
         return result
 
+    def andorobjectdescriptionexpression(self, items):
+        # objectdescriptionexpression ("," objectdescriptionexpression ",")* "and/or" objectdescriptionexpression
+        result = items[-1]
+        for item in reversed(items[:-1]):
+            result = AndOrExpression(lhs=item, rhs=result)
+        return result
+
     def objectpreterm(self, items):
         return items[0]
 
@@ -1376,6 +1386,21 @@ class CardTransformer(Transformer):
         # all keywords, no children. Return a bare marker.
         return ActivationRestrictionStatement()
 
+    def triggerrestrictionstatement(self, items):
+        # `declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?`.
+        # Literal "trigger"/"only" are dropped; the NumberValue (valuefrequency) is
+        # always present and splits the optional subject from the optional time.
+        freq_idx = next(
+            (i for i, it in enumerate(items) if isinstance(it, NumberValue)), None
+        )
+        if freq_idx is None:
+            raise LoweringIncomplete("triggerrestriction-without-frequency")
+        subject = items[0] if freq_idx == 1 else None
+        time = items[freq_idx + 1] if freq_idx + 1 < len(items) else None
+        return TriggerRestrictionStatement(
+            frequency=items[freq_idx], subject=subject, time=time
+        )
+
     def abilitysequencestatement(self, items):
         # `flying`, `flying and haste`, `flying, vigilance, and trample`.
         # Grammar yields one or more keyword abilities separated by `,` / `and`.
@@ -1416,6 +1441,12 @@ class CardTransformer(Transformer):
         if len(non_token) == 1:
             return BeingStatement(rhs=non_token[0])
         return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
+
+    def becomesstatement(self, items):
+        # `<subject>? become[s] <rhs>` -> BeingStatement.
+        if len(items) == 1:
+            return BeingStatement(rhs=items[0])
+        return BeingStatement(lhs=items[0], rhs=items[1])
 
     def costincreasestatement(self, items):
         # `<subject> cost[s] <mana> more to cast/activate` — literal strings
@@ -1504,6 +1535,14 @@ class CardTransformer(Transformer):
 
     def atstatementinv(self, items):
         return AtStatement(conditional=items[1], consequence=items[0], inverted=True)
+
+    def aslongasstatement(self, items):
+        # "for"? "as" "long" "as" statement "," statement
+        return AsLongAsStatement(conditional=items[0], consequence=items[1], inverted=False)
+
+    def aslongasstatementinv(self, items):
+        # statement "for"? "as" "long" "as" statement
+        return AsLongAsStatement(conditional=items[1], consequence=items[0], inverted=True)
 
     def forstatementinv(self, items):
         # statement "for" "each" (genericdeclarationexpression | "time" statement) ("beyond" "the" "first")?
@@ -1674,6 +1713,12 @@ class CardTransformer(Transformer):
     def surveilexpression(self, items):
         # "surveil" valueexpression
         return SurveilExpression(caliber=items[0])
+
+    def conniveexpression(self, items):
+        # declarationorreference? "connive"["s"] valueexpression?
+        # Surface-only stub mirroring gainlifeexpression: subject and amount
+        # are dropped until a card needs them.
+        return ConniveExpression(subject=None)
 
     def gainlifeexpression(self, items):
         # playerdeclref? "gain"["s"] (valueexpression? "life" | "life" valueexpression)

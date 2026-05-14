@@ -34,8 +34,10 @@ def getGrammar():
         | additionalcoststatement
         | modalstatement
         | activationrestrictionstatement
+        | triggerrestrictionstatement
 
         activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
+        triggerrestrictionstatement: declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?
 
         thenstatement: "then" statement
         insteadstatement: statement "instead"
@@ -578,6 +580,7 @@ def getGrammar():
         getsptexpression: declarationorreference? "get"["s"] ptchangeexpression
         diesexpression: declarationorreference? "die"["s"] timeexpression?
         gainabilityexpression: declarationorreference? "gain"["s"]  abilitysequencestatement
+        | declarationorreference? "gain"["s"] "\\"" statementblock "\\"" "."? "\\""?
         loseabilityexpression: declarationorreference? "lose"["s"] abilitysequencestatement
         lookexpression: playerdeclref? ("look"["s"]|"looked") "at" (declarationorreference | cardexpression | zonedeclarationexpression)
         takeextraturnexpression: playerdeclref? "take"["s"] timeexpression
@@ -734,7 +737,7 @@ def getGrammar():
         levelupexpression: ("level" levelrangeexpression ptexpression ability*)
         levelrangeexpression: NUMBER "-" NUMBER | NUMBER "+"
         surveilexpression: "surveil" valueexpression
-        conniveexpression: "connive" valueexpression
+        conniveexpression: declarationorreference? "connive"["s"] valueexpression?
         monstrosityexpression: "monstrosity" valueexpression
         adaptexpression: "adapt" valueexpression
         amassexpression: "amass" typeterm? valueexpression
