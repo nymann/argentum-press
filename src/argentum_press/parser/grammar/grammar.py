@@ -496,7 +496,7 @@ def getGrammar():
         ptexpression: valueexpression "/" valueexpression
         namedexpression: "named" (namereference | objectname)
         !locationexpression: ("into" | "onto" | "in" | "on" | "from" | "on top of" | "on bottom of")? zonedeclarationexpression
-        withexpression: "with" (reference | abilitysequencestatement | characteristicexpression | (valueexpression | "a"["n"])? countertype "counter"["s"] "on" reference)
+        withexpression: "with" (reference | abilitysequencestatement | characteristicexpression | (valueexpression | "a"["n"])? "additional"? countertype "counter"["s"] "on" reference)
         withoutexpression: "without" (reference | abilitysequencestatement | characteristicexpression | (valueexpression | "a"["n"])? countertype "counter"["s"] "on" reference)
         doesnthaveexpression: "does" "not" "have" declarationorreference //[Basically equivalent to 'without']
         dealtdamageexpression: "dealt" DAMAGETYPE ("this" "way")? ("by" declarationorreference)? timeexpression?
