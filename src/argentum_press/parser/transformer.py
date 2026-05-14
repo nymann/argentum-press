@@ -1178,6 +1178,13 @@ class CardTransformer(Transformer):
     def characteristicexpression(self, items):
         return items[0]
 
+    def characteristicvaluecompexpr(self, items):
+        # `characteristicterms (valueexpression|ptexpression)` in either order
+        # — e.g. "mana value 2 or less". Wrap both children in a
+        # DescriptionExpression so it slots into the characteristicexpression
+        # path the same way the bare characteristicterms variant does.
+        return DescriptionExpression(descriptors=tuple(items))
+
     def characteristicterms(self, items):
         return items[0]
 
