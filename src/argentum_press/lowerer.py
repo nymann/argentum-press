@@ -23,6 +23,7 @@ during the transition); see that module for prose discussion.
 """
 from __future__ import annotations
 
+import re
 from enum import Enum
 from functools import singledispatchmethod
 from typing import Any
@@ -177,6 +178,8 @@ def _classify_type_operand(node: Any) -> str:
             return "creature"
         if text in {"player", "players", "opponent", "opponents"}:
             return "player"
+        if text in {"permanent", "permanents"}:
+            return "permanent"
         return "unknown"
     if isinstance(node, ast.GenericDeclarationExpression):
         return _classify_type_operand(node.definition)
@@ -193,6 +196,21 @@ def _classify_type_operand(node: Any) -> str:
                 return kind
         return "unknown"
     return "unknown"
+
+
+def _has_nonland_qualifier(node: Any) -> bool:
+    """Detect a ``non-land`` qualifier anywhere in a target operand subtree."""
+    if isinstance(node, ast.NonExpression):
+        inner = node.operand
+        if isinstance(inner, ast.Name) and inner.name.strip().lower() == "land":
+            return True
+    if isinstance(node, ast.DescriptionExpression):
+        return any(_has_nonland_qualifier(d) for d in node.descriptors)
+    if isinstance(node, ast.TypeExpression):
+        return any(_has_nonland_qualifier(t) for t in node.types)
+    if isinstance(node, ast.GenericDeclarationExpression):
+        return _has_nonland_qualifier(node.definition)
+    return False
 
 
 def _find_pt_expression(node: Any) -> ast.PTExpression | None:
@@ -248,6 +266,36 @@ def _find_target_subject(node: Any) -> ast.TargetExpression | None:
             if found is not None:
                 return found
         return None
+    return None
+
+
+# Colored mana symbols are wrapped one level deeper by the transformer
+# (``Name(name="Name(name='U')")``); strip the outer wrapper so the
+# rendered literal is the expected ``{U}`` rather than ``{Name(name='U')}``.
+_NAME_REPR_RE = re.compile(r"^Name\(name=['\"](.+)['\"]\)$")
+
+
+def _kicker_cost_string(cost: Any) -> str | None:
+    """Render a KickerAbility cost into the engine's ``"{1}{U}"`` literal form."""
+    if isinstance(cost, ast.CostSequenceExpression):
+        parts: list[str] = []
+        for arg in cost.arguments:
+            sub = _kicker_cost_string(arg)
+            if sub is None:
+                return None
+            parts.append(sub)
+        return "".join(parts)
+    if isinstance(cost, ast.ManaExpression):
+        out = ""
+        for sym in cost.symbols:
+            if not isinstance(sym, ast.Name):
+                return None
+            name = sym.name
+            m = _NAME_REPR_RE.match(name)
+            if m:
+                name = m.group(1)
+            out += "{" + name + "}"
+        return out
     return None
 
 
@@ -455,7 +503,11 @@ class KotlinLowerer:
 
     @ability.register
     def _(self, ability: ast.KickerAbility) -> str:
-        raise EmitterGap(ability)
+        cost_str = _kicker_cost_string(ability.cost)
+        if cost_str is None:
+            raise EmitterGap(ability)
+        factory = "multikicker" if ability.is_multi else "kicker"
+        return f'keywordAbility(KeywordAbility.{factory}("{cost_str}"))'
 
     @ability.register
     def _(self, ability: ast.FlashbackAbility) -> str:
@@ -838,6 +890,14 @@ class KotlinLowerer:
             # generate it (see the ActivatedAbility @ability handler, which
             # also gaps). Emit a stub so the gap moves past ActivationStatement.
             return ("Effects.Activate()",)
+        if isinstance(stmt, ast.MayStatement):
+            # "<player> may <statement>" — optional action gated on the
+            # player's yes/no decision (e.g. "you may mill a card"). The
+            # engine has a MayEffect data class but no top-level Effects.May
+            # DSL function exposed in mtg-sdk/dsl/Effects.kt yet; emit a stub
+            # so the gap moves past MayStatement to whatever the next
+            # unhandled node is.
+            return ("Effects.May()",)
         if isinstance(stmt, ast.BeingStatement):
             # "<X> is/has/can't <Y>" — grants an ability or state predicate
             # to the LHS (e.g. "enchanted land has '...'"). argentum-engine
@@ -906,6 +966,11 @@ class KotlinLowerer:
     def _(self, e: ast.SurveilExpression) -> str:
         amount = _number_int(e.caliber)
         return f"EffectPatterns.surveil({amount})"
+
+    @effect.register
+    def _(self, e: ast.MillExpression) -> str:
+        amount = _number_int(e.quantity)
+        return f"EffectPatterns.mill({amount})"
 
     @effect.register
     def _(self, e: ast.ReturnExpression) -> str:
@@ -1004,6 +1069,14 @@ class KotlinLowerer:
         return "Effects.Cast()"
 
     @effect.register
+    def _(self, e: ast.UncastExpression) -> str:
+        # "counter <subject>" (kept internally as "uncast") — surface stub
+        # mirroring CastExpression; argentum-engine has no top-level effect
+        # surface for a counterspell yet. Emit a stub so the gap moves past
+        # UncastExpression.
+        return "Effects.Uncast()"
+
+    @effect.register
     def _(self, e: ast.ControlExpression) -> str:
         # "<controller> control(s)" — a decoration carrying only the
         # controller as a surface descriptor (e.g. "you control" appearing
@@ -1045,10 +1118,22 @@ class KotlinLowerer:
                 return 'target("target creature", Targets.Creature)'
             if type_kind == "player":
                 return 'target("target player", Targets.Player)'
+            if type_kind == "permanent":
+                if _has_nonland_qualifier(operand):
+                    return 'target("target nonland permanent", Targets.NonlandPermanent)'
+                return 'target("target permanent", Targets.Permanent)'
             raise EmitterGap(node)
         if isinstance(node, ast.SelfReference):
             return "Targets.Self"
         if isinstance(node, ast.NameReference):
             # Bare ~ / NameReference is the card itself.
+            return "Targets.Self"
+        if isinstance(node, ast.DescriptionExpression):
+            # A descriptor used as a target reference (e.g. "those tokens"
+            # as the subject of an Exile). The rich AST carries a flat
+            # descriptor sequence with no concrete target type, and
+            # argentum-engine has no top-level descriptor-target surface;
+            # emit a stub Targets.Self so the gap moves past
+            # DescriptionExpression to whatever the next unhandled node is.
             return "Targets.Self"
         raise EmitterGap(node)

@@ -1245,6 +1245,9 @@ class CardTransformer(Transformer):
         token = items[0]
         return Name(name=str(token))
 
+    def nonqualifier(self, items):
+        return NonExpression(operand=Name(name=str(items[0])))
+
     def characteristicexpression(self, items):
         return items[0]
 
@@ -1748,6 +1751,11 @@ class CardTransformer(Transformer):
     def gainabilityexpression(self, items):
         # declarationorreference? "gain"["s"] abilitysequencestatement
         # Mirrors gainlifeexpression's surface-only stub.
+        return GainLoseExpression(subject=None)
+
+    def loseabilitiesexpression(self, items):
+        # declarationorreference? "lose"["s"] declarationorreference
+        # Mirrors gainabilityexpression's surface-only stub.
         return GainLoseExpression(subject=None)
 
     def chooseexpression(self, items):
