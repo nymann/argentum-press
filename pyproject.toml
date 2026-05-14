@@ -19,6 +19,7 @@ argentum-press = "argentum_press.cli:main"
 dev = [
     "pytest>=8.0",
     "pytest-httpx>=0.30",
+    "pytest-xdist>=3.6",
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
