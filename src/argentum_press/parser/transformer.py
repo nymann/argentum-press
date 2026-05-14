@@ -2004,10 +2004,39 @@ def parse(card: dict | str, *, name: str | None = None) -> ParseResult:
         tree = parser.parse(preprocessed)
     except UnexpectedInput as e:
         raw = str(e)
+        details = _lark_error_details(e, preprocessed, raw)
+        # Build a discriminating label from the rich error details. The
+        # raw first line is the generic "Unexpected X. Expected one of:";
+        # the discriminating token list lives on subsequent lines and was
+        # being truncated by .splitlines()[0], collapsing distinct parse
+        # failures to the same label. We use ``unexpected`` + a locator:
+        # pos_in_stream when Lark gives us one, or a hash of the expected
+        # token set when it doesn't (UnexpectedEOF leaves position at -1
+        # but exposes .expected, and two EOF failures expecting different
+        # continuations need different fixes, so the expected-set is the
+        # natural fingerprint). ``unexpected`` is normalized to "<EOF>"
+        # when the upstream detail formatter produces the empty
+        # " (type=<EOF>)" shape.
+        unexpected_short = details.unexpected.strip()
+        if not unexpected_short or "(type=<EOF>)" in unexpected_short:
+            unexpected_short = "<EOF>"
+        if details.pos_in_stream >= 0:
+            locator = f"p{details.pos_in_stream}"
+        else:
+            # UnexpectedEOF under Earley + ambiguity often leaves
+            # pos_in_stream=-1 and an empty .expected. Fall back to a hash
+            # of the preprocessed text so the same card on a re-run gets
+            # the same label (no-progress detection works) while distinct
+            # cards get distinct labels (false-positive aborts don't).
+            import hashlib
+            text_sig = hashlib.sha256(
+                details.preprocessed_text.encode("utf-8")
+            ).hexdigest()[:8]
+            locator = f"t{text_sig}"
         return ParseResult(error=ParseError(
             kind="incomplete",
-            message=f"parse-error:{raw}".splitlines()[0],
-            details=_lark_error_details(e, preprocessed, raw),
+            message=f"parse-error:{unexpected_short}@{locator}",
+            details=details,
         ))
     except LarkError as e:
         return ParseResult(error=ParseError(kind="invalid", message=f"lark-error:{e!s}".splitlines()[0]))
