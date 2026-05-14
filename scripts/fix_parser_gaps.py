@@ -41,6 +41,8 @@ from argentum_press.fix_strategy import (
     GapFixer,
     IterationContext,
     LowerPlaybookFixer,
+    ParseErrorPlaybookFixer,
+    UnmodeledRulePlaybookFixer,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1672,11 +1674,30 @@ def main(argv: list[str] | None = None) -> int:
         say=lambda msg: stamp(f"{DIM}{msg}{RESET}"),
     )
     if args.mode == "playbook":
-        from argentum_press.playbook import lower as playbook_lower
-        strategy: GapFixer = LowerPlaybookFixer(
+        from argentum_press.playbook import (
+            lower as playbook_lower,
+            parse_error as playbook_parse_error,
+            unmodeled_rule as playbook_unmodeled_rule,
+        )
+        # Composition: parse-error -> unmodeled-rule -> lower -> freeform.
+        # Every gap kind routes to its dedicated playbook; freeform is the
+        # last-resort fallback when a gap doesn't match any kind (shouldn't
+        # happen but the chain is structural, not exhaustive).
+        say = lambda msg: stamp(f"{DIM}{msg}{RESET}")
+        lower_fixer = LowerPlaybookFixer(
             run_lower=playbook_lower.run,
             fallback=freeform,
-            say=lambda msg: stamp(f"{DIM}{msg}{RESET}"),
+            say=say,
+        )
+        unmodeled_fixer = UnmodeledRulePlaybookFixer(
+            run_unmodeled_rule=playbook_unmodeled_rule.run,
+            fallback=lower_fixer,
+            say=say,
+        )
+        strategy: GapFixer = ParseErrorPlaybookFixer(
+            run_parse_error=playbook_parse_error.run,
+            fallback=unmodeled_fixer,
+            say=say,
         )
     else:
         strategy = freeform

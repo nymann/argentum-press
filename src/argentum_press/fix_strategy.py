@@ -122,6 +122,75 @@ class FreeformFixer(GapFixer):
         return FixOutcome(rc=0, summary=summary, outcome_tag="pass")
 
 
+def _dump_trace(result: Any, ctx: IterationContext, label: str, say: Callable[[str], None]) -> None:
+    """On playbook abort, drop a trace JSON next to the recorder and print
+    the failing step's error to stderr.
+
+    Shared helper for every playbook fixer. The standalone ``run_playbook_*.py``
+    CLIs accept ``--trace-out``; when a playbook runs as a strategy inside
+    the fix-loop there's no equivalent hook, and the in-memory steps
+    evaporate. The trace JSON keeps the failure mode visible.
+    """
+    import json
+    import sys
+    last = result.steps[-1] if getattr(result, "steps", None) else None
+    if last and isinstance(last.payload, dict) and "error" in last.payload:
+        say(f"playbook {result.outcome} on {last.name}: {last.payload['error']}")
+
+    from pathlib import Path
+    slug = label.split(".")[-1].lower() or "abort"
+    # Strip kind-prefix bits that contain colons/spaces so the filename is sane.
+    slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in slug)
+    ts = ""
+    rec = ctx.rec
+    if rec is not None and getattr(rec, "started_at", None):
+        ts = f"{rec.started_at}-"
+    out_root: Path | None = None
+    recorder = ctx.recorder
+    if recorder is not None and getattr(recorder, "record_dir", None):
+        out_root = recorder.record_dir
+    if out_root is None:
+        out_root = Path.cwd() / "experiments" / "playbook-traces"
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_path = out_root / f"{ts}{slug}-{result.outcome}.json"
+    try:
+        out_path.write_text(result.as_json(), encoding="utf-8")
+        print(f"  playbook trace written to {out_path}", file=sys.stderr)
+    except OSError as e:
+        print(f"  failed to write playbook trace: {e}", file=sys.stderr)
+
+
+def _wrap_playbook_outcome(
+    result: Any,
+    wall_s: float,
+    ctx: IterationContext,
+    label: str,
+    say: Callable[[str], None],
+) -> FixOutcome:
+    """Convert a :class:`PlaybookResult` into the strategy's :class:`FixOutcome`.
+
+    Common across the three playbook fixers: surface wall time on the
+    recorder, zero out tool_counts (no claude turns), dump trace on abort,
+    JSON-encode the final plan as the commit summary on success.
+    """
+    say(f"playbook outcome={result.outcome}  wall_s={wall_s:.2f}")
+    if ctx.rec is not None:
+        ctx.rec.wall_s = wall_s
+        ctx.rec.tool_counts = {}
+
+    if not result.outcome.startswith("applied"):
+        _dump_trace(result, ctx, label, say)
+        return FixOutcome(
+            rc=2,
+            summary=f"playbook outcome={result.outcome}",
+            outcome_tag=f"playbook_{result.outcome}",
+        )
+
+    import json
+    summary = json.dumps(result.final_plan, indent=2) if result.final_plan else ""
+    return FixOutcome(rc=0, summary=summary, outcome_tag="pass")
+
+
 class LowerPlaybookFixer(GapFixer):
     """Dispatches lower-kind gaps to the structured playbook; defers others.
 
@@ -145,7 +214,7 @@ class LowerPlaybookFixer(GapFixer):
 
     def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
         if gap.kind != "lower":
-            self._say(f"playbook: kind={gap.kind} not supported, falling back to freeform")
+            self._say(f"lower-playbook: kind={gap.kind} not lower, falling back")
             return self._fallback.fix(gap, ctx)
 
         if ctx.dry_run:
@@ -163,67 +232,89 @@ class LowerPlaybookFixer(GapFixer):
             ast_text=ctx.ast_text,
             verbose=True,
         )
-        wall_s = time.monotonic() - t_start
-        self._say(f"playbook outcome={result.outcome}  wall_s={wall_s:.2f}")
+        return _wrap_playbook_outcome(
+            result, time.monotonic() - t_start, ctx, gap.label, self._say
+        )
 
-        if ctx.rec is not None:
-            # Playbook keeps richer per-step timing in its own trace JSON;
-            # the runs.tsv only carries the aggregate. Surface wall_s + zero
-            # the tool_counts (the playbook is structured, not freeform).
-            ctx.rec.wall_s = wall_s
-            ctx.rec.tool_counts = {}
 
-        if not result.outcome.startswith("applied"):
-            self._dump_trace(result, ctx, gap.label)
-            return FixOutcome(
-                rc=2,
-                summary=f"playbook outcome={result.outcome}",
-                outcome_tag=f"playbook_{result.outcome}",
-            )
+class ParseErrorPlaybookFixer(GapFixer):
+    """Dispatches ``parse-error:`` gaps to the parse-error playbook.
 
-        import json
-        summary = json.dumps(result.final_plan, indent=2) if result.final_plan else ""
-        return FixOutcome(rc=0, summary=summary, outcome_tag="pass")
+    Every other gap is deferred to ``fallback``; in production we chain it
+    in front of :class:`UnmodeledRulePlaybookFixer` (which in turn fronts
+    :class:`LowerPlaybookFixer`, which fronts a :class:`FreeformFixer`).
+    """
 
-    def _dump_trace(self, result: Any, ctx: IterationContext, label: str) -> None:
-        """On playbook abort, drop a trace JSON next to the recorder and print
-        the failing step's error to stderr.
+    def __init__(
+        self,
+        *,
+        run_parse_error: Callable[..., Any],
+        fallback: GapFixer,
+        say: Callable[[str], None] | None = None,
+    ) -> None:
+        self._run_parse_error = run_parse_error
+        self._fallback = fallback
+        self._say = say or (lambda _msg: None)
 
-        The standalone ``run_playbook_lower.py`` CLI accepts ``--trace-out``;
-        when the playbook runs as a strategy inside the fix-loop there's no
-        equivalent hook, and the in-memory steps evaporate. That made the
-        first race iteration's L4 failure invisible from the pane output —
-        a real diagnostic bug. We now always persist the trace on abort.
-        """
-        import json
-        import sys
-        # Print the last step's error so the failure mode is visible in the
-        # pane without opening the trace file.
-        last = result.steps[-1] if getattr(result, "steps", None) else None
-        if last and isinstance(last.payload, dict) and "error" in last.payload:
-            self._say(f"playbook {result.outcome} on {last.name}: {last.payload['error']}")
+    def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
+        if gap.kind != "parse" or not gap.label.startswith("parse-error:"):
+            return self._fallback.fix(gap, ctx)
 
-        # Pick a trace location. If --record is set we sit it alongside the
-        # other run artifacts. Otherwise fall back to experiments/playbook-traces/.
-        from pathlib import Path
-        slug = label.split(".")[-1].lower() or "abort"
-        ts = ""
-        rec = ctx.rec
-        if rec is not None and getattr(rec, "started_at", None):
-            ts = f"{rec.started_at}-"
-        out_root: Path | None = None
-        recorder = ctx.recorder
-        if recorder is not None and getattr(recorder, "record_dir", None):
-            out_root = recorder.record_dir
-        if out_root is None:
-            out_root = Path.cwd() / "experiments" / "playbook-traces"
-        out_root.mkdir(parents=True, exist_ok=True)
-        out_path = out_root / f"{ts}{slug}-{result.outcome}.json"
-        try:
-            out_path.write_text(result.as_json(), encoding="utf-8")
-            print(f"  playbook trace written to {out_path}", file=sys.stderr)
-        except OSError as e:
-            print(f"  failed to write playbook trace: {e}", file=sys.stderr)
+        if ctx.dry_run:
+            self._say(f"--dry-run: would call playbook.parse_error.run for label={gap.label}")
+            return FixOutcome(rc=0, outcome_tag="dry_run")
+
+        import time
+        t_start = time.monotonic()
+        self._say("running playbook.parse_error...")
+        result = self._run_parse_error(
+            label=gap.label,
+            project_dir=ctx.project_dir,
+            card_name=gap.card_name,
+            oracle_text=gap.oracle_text,
+            pe_block=ctx.pe_block,
+            verbose=True,
+        )
+        return _wrap_playbook_outcome(
+            result, time.monotonic() - t_start, ctx, gap.label, self._say
+        )
+
+
+class UnmodeledRulePlaybookFixer(GapFixer):
+    """Dispatches ``unmodeled-rule:`` gaps to the unmodeled-rule playbook."""
+
+    def __init__(
+        self,
+        *,
+        run_unmodeled_rule: Callable[..., Any],
+        fallback: GapFixer,
+        say: Callable[[str], None] | None = None,
+    ) -> None:
+        self._run_unmodeled_rule = run_unmodeled_rule
+        self._fallback = fallback
+        self._say = say or (lambda _msg: None)
+
+    def fix(self, gap: Any, ctx: IterationContext) -> FixOutcome:
+        if gap.kind != "parse" or not gap.label.startswith("unmodeled-rule:"):
+            return self._fallback.fix(gap, ctx)
+
+        if ctx.dry_run:
+            self._say(f"--dry-run: would call playbook.unmodeled_rule.run for label={gap.label}")
+            return FixOutcome(rc=0, outcome_tag="dry_run")
+
+        import time
+        t_start = time.monotonic()
+        self._say("running playbook.unmodeled_rule...")
+        result = self._run_unmodeled_rule(
+            label=gap.label,
+            project_dir=ctx.project_dir,
+            card_name=gap.card_name,
+            oracle_text=gap.oracle_text,
+            verbose=True,
+        )
+        return _wrap_playbook_outcome(
+            result, time.monotonic() - t_start, ctx, gap.label, self._say
+        )
 
 
 __all__ = [
@@ -232,4 +323,6 @@ __all__ = [
     "GapFixer",
     "IterationContext",
     "LowerPlaybookFixer",
+    "ParseErrorPlaybookFixer",
+    "UnmodeledRulePlaybookFixer",
 ]
