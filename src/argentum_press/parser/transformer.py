@@ -957,6 +957,14 @@ class CardTransformer(Transformer):
         # CUSTOM NumberValue so it slots into the valueexpression path.
         return NumberValue(value="that many", ntype=NumberTypeEnum.CUSTOM)
 
+    def uptoexpression(self, items):
+        # `uptoexpression: "up" "to" valueterm`. Surface as a CUSTOM NumberValue
+        # carrying the inner value (e.g. "up to 2") so it slots into the
+        # valueexpression path.
+        inner = items[0]
+        inner_str = inner.value if isinstance(inner, NumberValue) else str(inner)
+        return NumberValue(value=f"up to {inner_str}", ntype=NumberTypeEnum.CUSTOM)
+
     def valuecustom(self, items):
         # "x" or "*" - empty items because the grammar matches a literal.
         # The actual character is recoverable from the parse tree only if
