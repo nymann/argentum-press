@@ -36,6 +36,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from argentum_press.fix_strategy import (
+    FreeformFixer,
+    GapFixer,
+    IterationContext,
+    LowerPlaybookFixer,
+)
+
 REPO = Path(__file__).resolve().parents[1]
 GRAMMAR = REPO / "src/argentum_press/parser/grammar/grammar.py"
 TRANSFORMER = REPO / "src/argentum_press/parser/transformer.py"
@@ -1626,6 +1633,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{RED}set_code positional is required.{RESET}", file=sys.stderr)
         return 2
 
+    # ---- pick strategy ----------------------------------------------------
+    # Composition: --mode playbook wraps the freeform fixer as its non-lower
+    # fallback. So --mode playbook means "playbook for lower, freeform for
+    # everything else" — the realistic deployment shape and the fair A/B
+    # comparison against pure freeform.
+    freeform = FreeformFixer(
+        stream_claude=stream_claude,
+        render_prompt=_render_prompt_variant,
+        run_pytest=run_pytest,
+        claude_cmd=claude_cmd,
+        prompt_variant=args.prompt_variant,
+        say=lambda msg: stamp(f"{DIM}{msg}{RESET}"),
+    )
+    if args.mode == "playbook":
+        from argentum_press.playbook import lower as playbook_lower
+        strategy: GapFixer = LowerPlaybookFixer(
+            run_lower=playbook_lower.run,
+            fallback=freeform,
+            say=lambda msg: stamp(f"{DIM}{msg}{RESET}"),
+        )
+    else:
+        strategy = freeform
+
     prev_label = ""
     i = 0
     while True:
@@ -1685,87 +1715,39 @@ def main(argv: list[str] | None = None) -> int:
             rec.gap_label = gap.label
             rec.card_name = gap.card_name
 
-        if args.mode == "playbook":
-            if gap.kind != "lower":
-                stamp(
-                    f"{RED}--mode playbook only supports kind=lower gaps; "
-                    f"got kind={gap.kind} (label={gap.label}). abort.{RESET}"
-                )
-                if recorder and rec:
-                    rec.outcome = "abort_unsupported_kind"
-                    rec.description = _desc()
-                    recorder.finish_iteration(rec)
-                return 2
-
-            if args.dry_run:
-                stamp(f"{DIM}--dry-run with --mode playbook: would call playbook.lower.run "
-                      f"for label={gap.label}{RESET}")
-                return 0
-
-            from argentum_press.playbook import lower as playbook_lower
-            t_start = time.monotonic()
-            stamp(f"{DIM}running playbook.lower...{RESET}")
-            result = playbook_lower.run(
-                label=gap.label,
-                project_dir=args.project_dir,
-                card_name=gap.card_name,
-                oracle_text=gap.oracle_text,
-                ast_text=ast_text,
-                verbose=True,
-            )
-            wall_s = time.monotonic() - t_start
-            stamp(f"{DIM}playbook outcome={result.outcome}  wall_s={wall_s:.2f}{RESET}")
+        transcript_path = (
+            recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
+            if (recorder is not None and rec is not None) else None
+        )
+        iter_ctx = IterationContext(
+            set_code=args.set_code,
+            project_dir=args.project_dir,
+            gap_ctx=ctx,
+            ast_text=ast_text,
+            pe_block=pe_block,
+            recorder=recorder,
+            rec=rec,
+            transcript_path=transcript_path,
+            dry_run=args.dry_run,
+        )
+        outcome = strategy.fix(gap, iter_ctx)
+        if outcome.outcome_tag == "dry_run":
+            return 0
+        if outcome.rc != 0:
+            # The strategy's outcome_tag is how it asks the orchestrator to
+            # label this iteration in runs.tsv ("claude_error", "abort_pytest",
+            # "playbook_aborted-l3", etc.). The strategy itself doesn't touch
+            # the recorder.
+            stamp(f"{RED}strategy aborted (rc={outcome.rc}, tag={outcome.outcome_tag}){RESET}")
+            if outcome.summary:
+                print(outcome.summary[-2000:], file=sys.stderr)
             if recorder and rec:
-                # Playbook traces have richer per-step timing; runs.tsv only
-                # has the aggregate. Capture wall_s + outcome so the A/B diff
-                # is meaningful.
-                rec.wall_s = wall_s
-                rec.tool_counts = {}  # playbook is structured, no Read/Edit counts
-            if not result.outcome.startswith("applied"):
-                stamp(f"{RED}playbook did not apply ({result.outcome}); aborting iteration.{RESET}")
-                if recorder and rec:
-                    rec.outcome = f"playbook_{result.outcome}"
-                    rec.description = _desc()
-                    recorder.finish_iteration(rec)
-                return 2
-            # Playbook ran pytest as part of its own gate; trust the outcome.
-            summary = json.dumps(result.final_plan, indent=2) if result.final_plan else ""
-        else:
-            prompt = _render_prompt_variant(args.prompt_variant, ctx)
-            if args.dry_run:
-                print(prompt)
-                return 0
-
-            transcript_path = (
-                recorder.transcript_jsonl_path(rec, _gap_slug(gap.label))
-                if (recorder is not None and rec is not None) else None
-            )
-
-            rc, summary = stream_claude(
-                prompt,
-                transcript_path=transcript_path,
-                record=rec,
-                claude_cmd=claude_cmd,
-            )
-            if rc != 0:
-                stamp(f"{RED}claude exited {rc}; aborting loop.{RESET}")
-                if recorder and rec:
-                    rec.outcome = "claude_error"
-                    rec.description = _desc()
-                    recorder.finish_iteration(rec)
-                return rc
-
-            stamp(f"{DIM}running pytest...{RESET}")
-            rc, output = run_pytest()
-            if rc != 0:
-                stamp(f"{RED}pytest red after agent edit; abort.{RESET}")
-                print(output[-2000:], file=sys.stderr)
-                if recorder and rec:
-                    rec.outcome = "abort_pytest"
-                    rec.description = _desc()
-                    recorder.finish_iteration(rec)
-                return rc
-            stamp(f"{GREEN}pytest green.{RESET}")
+                rec.outcome = outcome.outcome_tag
+                rec.description = _desc()
+                recorder.finish_iteration(rec)
+            return outcome.rc
+        stamp(f"{GREEN}{outcome.outcome_tag}.{RESET}")
+        summary = outcome.summary
 
         if not args.no_commit:
             commit_iteration(
