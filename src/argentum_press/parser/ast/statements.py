@@ -279,3 +279,11 @@ class RatherStatement(Statement):
 
     preferred: Statement | None = None
     alternative: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WhereStatement(Statement):
+    """``<body>, where <definition>`` — elaborates a variable or term used in the body statement."""
+
+    body: Statement | None = None
+    definition: Statement | None = None
