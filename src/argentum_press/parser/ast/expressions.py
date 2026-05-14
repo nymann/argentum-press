@@ -698,3 +698,10 @@ class UpToOneTargetCreatureExpression(TargetExpression):
     """`up to one target creature` — a targeting expression selecting at most one creature."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class SuspectExpression(TargetExpression):
+    """`suspect <reference>` — marks a permanent as suspected, making it a suspect until end of turn."""
+
+    reference: Expression | None = None
