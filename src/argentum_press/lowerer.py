@@ -111,6 +111,13 @@ def _find_trigger_marker(node: Any) -> str:
         # surface fields; map to the engine's generic DealsDamage trigger
         # so the gap moves past DealsDamageExpression.
         return "deals damage"
+    if isinstance(node, ast.DiesExpression):
+        # "<subject>? die(s) <timing>?" as a trigger condition (e.g. "when
+        # this creature dies"). The rich AST carries subject / timing as
+        # surface fields; map to the engine's generic Dies trigger so the
+        # gap moves past DiesExpression. Subject-qualified variants
+        # (AnyCreatureDies / YourCreatureDies / ...) are a separate gap.
+        return "dies"
     if isinstance(node, ast.DescriptionExpression):
         parts = [_find_trigger_marker(d) for d in node.descriptors]
         for p in parts:
