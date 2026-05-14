@@ -583,7 +583,7 @@ def getGrammar():
         | declarationorreference? "assign"["s"] "no" DAMAGETYPE timeexpression -> nodamageassignedexpression
         | declarationorreference? "assign"["s"] DAMAGETYPE valueexpression -> alternatedamageassignmentexpression
         ableexpression: declarationorreference? "able" ("to" statement "do" "so")?
-        changezoneexpression: declarationorreference "enter"["s"] locationexpression? genericdeclarationexpression? zoneplacementmodifier? timeexpression? -> enterzoneexpression
+        changezoneexpression: declarationorreference ("enter"["s"] | "entered") locationexpression? controlmodifier? genericdeclarationexpression? zoneplacementmodifier? timeexpression? -> enterzoneexpression
         | declarationorreference "leaves" locationexpression -> leavezoneexpression
         skiptimeexpression: playerdeclref? "skip"["s"] timeexpression
         switchexpression: playerdeclref? "switch"["es"] declarationorreference
