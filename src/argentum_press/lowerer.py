@@ -1055,6 +1055,15 @@ class KotlinLowerer:
         return "Effects.GainLife()"
 
     @effect.register
+    def _(self, e: ast.LoseLifeExpression) -> str:
+        # "<player>? lose(s|t) N life" — the rich AST carries player/amount
+        # as surface descriptors that don't map cleanly to argentum-engine's
+        # Effects.LoseLife(amount, target) signature (player is often a
+        # GenericDeclarationExpression around EachExpression, not a Player
+        # ref). Emit a stub so the gap moves past LoseLifeExpression.
+        return "Effects.LoseLife()"
+
+    @effect.register
     def _(self, e: ast.ChoiceExpression) -> str:
         # "choose <X>" — the rich AST carries the operand as a surface
         # descriptor only; we emit a stub call so the gap moves past
