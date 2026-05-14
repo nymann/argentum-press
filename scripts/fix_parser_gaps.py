@@ -622,6 +622,56 @@ def _render_read_result(file_path: str, offset: int | None, limit: int | None) -
     )
 
 
+# Grep results carry a line number and snippet per match. Two shapes:
+#   <line>:<content>              (Grep on a single file)
+#   <path>:<line>:<content>       (Grep on a directory; ripgrep prepends path)
+# Context lines from -A/-B use `-` instead of `:` as the separator.
+_GREP_PATH_LINE_RE = re.compile(r"^([^:]+):(\d+)([-:])(.*)$")
+_GREP_LINE_RE = re.compile(r"^(\d+)([-:])(.*)$")
+
+
+def _highlight_grep_snippet(snippet: str, hint_path: str) -> str:
+    """Highlight a single grep snippet using a lexer guessed from ``hint_path``.
+    Returns the snippet unchanged if pygments isn't available or can't pick a
+    lexer — better than rendering broken color codes."""
+    try:
+        import pygments
+        from pygments.formatters import TerminalFormatter
+        from pygments.lexers import get_lexer_for_filename
+        from pygments.util import ClassNotFound
+    except ImportError:
+        return snippet
+    try:
+        lexer = get_lexer_for_filename(hint_path)
+    except ClassNotFound:
+        return snippet
+    # pygments emits a trailing newline we don't want here.
+    return pygments.highlight(snippet, lexer, TerminalFormatter()).rstrip("\n")
+
+
+def _render_grep_result(default_path: str, body: str) -> str:
+    """Walk a grep result body line-by-line, dimming the path/lineno prefix
+    and syntax-highlighting the snippet. Lines that don't match either grep
+    shape pass through untouched (e.g. ripgrep's blank separator between
+    files, or summary lines)."""
+    out: list[str] = []
+    for line in body.splitlines():
+        m = _GREP_PATH_LINE_RE.match(line)
+        if m:
+            path, lineno, sep, snippet = m.groups()
+            highlighted = _highlight_grep_snippet(snippet, path)
+            out.append(f"{DIM}{path}:{lineno}{sep}{RESET}{highlighted}")
+            continue
+        m = _GREP_LINE_RE.match(line)
+        if m:
+            lineno, sep, snippet = m.groups()
+            highlighted = _highlight_grep_snippet(snippet, default_path) if default_path else snippet
+            out.append(f"{DIM}{lineno}{sep}{RESET}{highlighted}")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 # ----------------------------------------------------------------------------
 
 
@@ -746,11 +796,10 @@ def _render_event(ev: dict[str, Any]) -> str | None:
                     body = str(raw or "")
                 is_err = bool(c.get("is_error"))
 
-                # If this result corresponds to a Read tool_use, slice the
-                # cached whole-file highlight to match. Whole-file is the only
-                # correct approach for Python (triple-quoted strings, etc.)
-                # but pygments is fast enough that one highlight per file
-                # version per session is invisible.
+                # If this result corresponds to a Read or Grep tool_use,
+                # route the body through the matching syntax-highlighting
+                # helper. Whole-file caching covers both (Grep snippets
+                # share the cache with Read via the path argument).
                 if not is_err:
                     use_id = c.get("tool_use_id")
                     original = _tool_uses_by_id.get(use_id) if use_id else None
@@ -763,19 +812,25 @@ def _render_event(ev: dict[str, Any]) -> str | None:
                         )
                         if rendered is not None:
                             body = rendered
+                    elif original and original.get("name") == "Grep":
+                        inp = original.get("input") or {}
+                        body = _render_grep_result(str(inp.get("path", "")), body)
 
-                color = RED if is_err else CYAN
-                marker = "→ ERROR" if is_err else "→"
                 if not body.strip():
-                    out.append(f"  {color}{marker}{RESET} {DIM}(no output){RESET}")
+                    if is_err:
+                        out.append(f"  {RED}→ ERROR{RESET} {DIM}(no output){RESET}")
+                    else:
+                        out.append(f"  {DIM}(no output){RESET}")
                     continue
                 capped = _cap_lines(body, 20, indent="  ")
-                # Recolor the leading "  " on the first line into a marker.
-                # We replace only the first occurrence so the rest of the
-                # block stays indented but uncolored.
-                if capped.startswith("  "):
+                # Errors get a "→ ERROR" badge on the first line because they
+                # need to be visible at a glance. Successful results sit
+                # cleanly under the tool_use line with just the indent —
+                # adding a "→" marker fights with the highlighted content
+                # underneath, which the user explicitly didn't want.
+                if is_err and capped.startswith("  "):
                     first_line, nl, rest = capped[2:].partition("\n")
-                    head = f"  {color}{marker}{RESET} {first_line}"
+                    head = f"  {RED}→ ERROR{RESET} {first_line}"
                     capped = head + (nl + rest if nl else "")
                 out.append(capped)
         return "\n".join(out) if out else None
