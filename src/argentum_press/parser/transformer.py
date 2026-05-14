@@ -128,6 +128,7 @@ from argentum_press.parser.ast import (
     ManaExpression,
     MayStatement,
     MiracleAbility,
+    ModalChoice,
     ModularAbility,
     MorphAbility,
     Name,
@@ -1254,6 +1255,19 @@ class CardTransformer(Transformer):
 
     def thenstatement(self, items):
         return CompoundStatement(statements=(items[0],), terminator=CompoundTerminator.THEN)
+
+    def modalchoiceexpression(self, items):
+        # MODALCHOICE abilityword? statementblock
+        ability_word: AbilityWord | None = None
+        block: StatementBlock | None = None
+        for it in items:
+            if isinstance(it, StatementBlock):
+                block = it
+            elif isinstance(it, AbilityWord):
+                ability_word = it
+        if block is None:
+            raise LoweringIncomplete("modalchoice-without-block")
+        return ModalChoice(block=block, ability_word=ability_word)
 
     def activationstatement(self, items):
         # `<cost> : <statementblock>` — body of an activated ability.

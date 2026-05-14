@@ -16,7 +16,9 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from argentum_press.parser.ast.abilities import AbilityWord
     from argentum_press.parser.ast.references import DamageType
+    from argentum_press.parser.ast.statements import StatementBlock
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +268,14 @@ class ModalExpression(Expression):
 
     number_of_choices: Expression
     options: tuple[Expression, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ModalChoice(Expression):
+    """A single bulleted option within a modal statement."""
+
+    block: StatementBlock
+    ability_word: AbilityWord | None = None
 
 
 # ---------------------------------------------------------------------------
