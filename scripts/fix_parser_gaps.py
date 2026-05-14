@@ -707,7 +707,14 @@ def _render_event(ev: dict[str, Any]) -> str | None:
                 else:
                     out.append(f"{CYAN}>>{RESET} {first}")
             elif c.get("type") == "tool_use":
-                out.append(_render_tool_use(c.get("name") or "?", c.get("input") or {}))
+                name = c.get("name") or "?"
+                inp = c.get("input") or {}
+                # Stash by id so the matching tool_result event can look up
+                # what was called (used by the Read-result syntax highlighter).
+                tu_id = c.get("id")
+                if tu_id:
+                    _tool_uses_by_id[tu_id] = {"name": name, "input": inp}
+                out.append(_render_tool_use(name, inp))
         return "\n".join(out) if out else None
     if t == "user":
         out: list[str] = []
@@ -729,6 +736,25 @@ def _render_event(ev: dict[str, Any]) -> str | None:
                 else:
                     body = str(raw or "")
                 is_err = bool(c.get("is_error"))
+
+                # If this result corresponds to a Read tool_use, slice the
+                # cached whole-file highlight to match. Whole-file is the only
+                # correct approach for Python (triple-quoted strings, etc.)
+                # but pygments is fast enough that one highlight per file
+                # version per session is invisible.
+                if not is_err:
+                    use_id = c.get("tool_use_id")
+                    original = _tool_uses_by_id.get(use_id) if use_id else None
+                    if original and original.get("name") == "Read":
+                        inp = original.get("input") or {}
+                        rendered = _render_read_result(
+                            str(inp.get("file_path", "")),
+                            inp.get("offset"),
+                            inp.get("limit"),
+                        )
+                        if rendered is not None:
+                            body = rendered
+
                 color = RED if is_err else CYAN
                 marker = "→ ERROR" if is_err else "→"
                 if not body.strip():
