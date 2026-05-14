@@ -61,9 +61,8 @@ def _format_parse_error_block(
     ``oracle_text`` is provided. Earley's ``pos_in_stream`` is ``-1`` for
     UnexpectedEOF, so without this the downstream LLM has to find the
     failing phrase by trial-and-error. The diagnostic identifies which
-    sentence(s) fail in isolation, and inside each, the longest prefix
-    that Lark still accepts — collapsing what was 30+ freeform turns
-    into one deterministic ~1s probe."""
+    sentence(s) fail in isolation. Cost is bounded at 1 + len(sentences)
+    parse calls; a 3-sentence card finishes in seconds even on Earley."""
     if details is None:
         return None
     expected = ", ".join(details.expected[:30]) or "(empty - Earley parser didn't expose a candidate set)"
@@ -79,13 +78,27 @@ def _format_parse_error_block(
         f"{_indent(details.raw_message, '    ')}"
     )
     if oracle_text.strip():
+        # Visible progress: Earley parses are 1-30s each, so even the
+        # bounded per-sentence walk can take a minute on a long card.
+        # The orchestrator above us is silent during the subprocess, so
+        # stamp the start/end here.
+        import time as _time
+        _log(f"computing failure-region for {card_name!r}...")
+        t0 = _time.monotonic()
         try:
             from argentum_press.parser.failure_region import find_parse_failure_region
             fr = find_parse_failure_region(oracle_text, name=card_name)
         except Exception as exc:  # noqa: BLE001
             # Diagnostic-only: never let this block the orchestrator.
+            _log(f"failure-region: analysis failed: {exc!r}")
             block += f"\n  failure-region: (analysis failed: {exc!r})"
         else:
+            wall = _time.monotonic() - t0
+            failing = len(fr.failing_sentences) if not fr.fully_parses else 0
+            _log(
+                f"failure-region: {fr.bisection_calls} parses in {wall:.1f}s, "
+                f"{failing} failing sentence(s)"
+            )
             if not fr.fully_parses:
                 block += "\n  failure-region:\n" + _indent(fr.render_for_prompt(), "  ")
     return block

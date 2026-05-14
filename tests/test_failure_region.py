@@ -116,43 +116,23 @@ def test_per_sentence_classifies_unmodeled_as_not_failing():
     assert s1_status.parse_error_label == "unmodeled-rule:putinzoneexpression"
 
 
-def test_failing_sentence_localizes_word_boundary():
-    # A failing sentence whose first 3 words ("When Foo enters") parse
-    # cleanly. Anything longer fails. The word scan should report
-    # parseable_word_count == 3.
-    sentence = "When Foo enters then zzqqxx the world."
-    table = {
-        sentence: _parse_error(),
-        "When": _parse_error(),  # incomplete: still parse-error
-        "When Foo": _parse_error(),
-        "When Foo enters": _ok(),
-    }
-    # All longer prefixes default to parse-error.
-    parse_fn = _make_parse_fn(table, default=_parse_error())
-    fr = find_parse_failure_region(sentence, name="Foo", parse_fn=parse_fn)
-    assert fr.fully_parses is False
-    s = fr.failing_sentences[0]
-    assert s.parseable_word_count == 3, fr.render_for_prompt()
-
-
-def test_failing_sentence_accepts_unmodeled_prefix_as_parseable():
-    # "Lark parses but lowerer doesn't" — i.e. unmodeled-rule on a
-    # prefix — counts as "parses far enough", so the boundary moves
-    # past it. This matches the real-world freeform probe behaviour
-    # (unmodeled-rule means the parser walked the whole prefix).
-    sentence = "Put cards on the bottom then zzqqxx."
-    table = {
-        sentence: _parse_error(),
-        "Put": _parse_error(),
-        "Put cards": _parse_error(),
-        "Put cards on": _parse_error(),
-        "Put cards on the": _parse_error(),
-        "Put cards on the bottom": _unmodeled("putinzoneexpression"),
-    }
-    parse_fn = _make_parse_fn(table, default=_parse_error())
-    fr = find_parse_failure_region(sentence, name="Foo", parse_fn=parse_fn)
-    s = fr.failing_sentences[0]
-    assert s.parseable_word_count == 5, fr.render_for_prompt()
+def test_bisection_cost_is_bounded_at_sentence_count():
+    # The helper used to do a word-by-word linear scan inside each
+    # failing sentence — on Earley-slow parses this turned into minutes
+    # of silent work for long cards. The trimmed version only does
+    # `1 (full) + N (per-sentence)` parses. Verify that bound holds.
+    s1 = "When Foo enters, you draw a card."
+    s2 = "Foo zzqqxx random gibberish."
+    s3 = "Bar zzqqxx more gibberish."
+    full = f"{s1} {s2} {s3}"
+    parse_fn = _make_parse_fn(
+        {full: _parse_error(), s1: _ok(), s2: _parse_error(), s3: _parse_error()},
+        default=_parse_error(),
+    )
+    fr = find_parse_failure_region(full, name="Foo", parse_fn=parse_fn)
+    # 1 full + 3 per-sentence = 4 parses regardless of word count.
+    assert fr.bisection_calls == 4
+    assert len(fr.failing_sentences) == 2
 
 
 def test_render_for_prompt_emits_readable_block():
@@ -175,9 +155,9 @@ def test_render_for_prompt_emits_readable_block():
     assert "OK" in rendered
 
 
-def test_bisection_call_count_reflects_work():
-    # 1 (full) + 2 (per-sentence) + N (word scan in the failing one)
-    # — N is len(s2.split()) = 4 here. Total = 7.
+def test_bisection_call_count_is_one_per_sentence_plus_full():
+    # Now that the word-scan is gone, the cost is exactly:
+    # 1 (full text) + N (one per sentence). Independent of word count.
     s1 = "When Foo enters, you draw a card."
     s2 = "Foo zzqqxx random gibberish."
     full = f"{s1} {s2}"
@@ -186,4 +166,4 @@ def test_bisection_call_count_reflects_work():
         default=_parse_error(),
     )
     fr = find_parse_failure_region(full, name="Foo", parse_fn=parse_fn)
-    assert fr.bisection_calls == 1 + 2 + len(s2.split())
+    assert fr.bisection_calls == 1 + 2  # full + 2 sentences

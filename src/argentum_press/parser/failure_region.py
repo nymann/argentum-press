@@ -52,17 +52,10 @@ class SentenceStatus:
       from the grammar's point of view.
     * ``"parse-error"`` — Lark itself can't accept the sentence. This is
       the case the parse-error playbook is meant to fix.
-
-    For ``parse-error`` sentences, ``parseable_word_count`` is the
-    largest ``k`` such that the first ``k`` words of the sentence don't
-    produce a ``parse-error`` (i.e., still parse cleanly through Lark).
-    The failure region inside the sentence is ``words[k:]``. ``None``
-    for the other kinds.
     """
 
     sentence: str
     kind: str  # "ok" | "unmodeled" | "parse-error"
-    parseable_word_count: int | None = None
     parse_error_label: str | None = None
 
 
@@ -110,12 +103,6 @@ class FailureRegion:
                 lines.append(f"    [{i}] UNMODELED  | {label} | {sentence_short}")
             else:
                 lines.append(f"    [{i}] PARSE-ERR  | {s.parse_error_label or '?'} | {sentence_short}")
-                if s.parseable_word_count is not None:
-                    words = s.sentence.split()
-                    ok = " ".join(words[: s.parseable_word_count])
-                    bad = " ".join(words[s.parseable_word_count :])
-                    lines.append(f"        parser accepts: {ok!r}")
-                    lines.append(f"        fails at:       {bad!r}")
         return "\n".join(lines)
 
 
@@ -134,15 +121,6 @@ def _classify(message: str | None) -> str:
     return "unmodeled"
 
 
-def _is_parseable(message: str | None) -> bool:
-    """True iff the message is NOT a Lark parse failure.
-
-    `None`, "unmodeled-rule:...", "lark-error:..." — all mean Lark
-    walked the input. Only "parse-error:..." indicates a grammar gap.
-    """
-    return _classify(message) != "parse-error"
-
-
 def find_parse_failure_region(
     oracle_text: str, *, name: str = "", parse_fn: ParseFn | None = None,
 ) -> FailureRegion:
@@ -156,19 +134,13 @@ def find_parse_failure_region(
        parse (or fail at the lowerer with ``unmodeled-rule:``) are not
        the parser's problem; the ones that fail with ``parse-error:``
        are the candidate failure regions.
-    3. For each failing sentence, forward-scan word-by-word: track the
-       largest ``k`` such that ``words[:k]`` does NOT produce a
-       ``parse-error``. The failure region within the sentence is
-       ``words[k:]``.
 
-    The word scan accepts the same "parses or fails downstream" success
-    criterion as the sentence test. Prefixes that aren't a complete
-    cardtext may still fail with ``parse-error:<EOF>`` (incomplete) —
-    those count as parse-error here, so the scan localizes the LAST
-    point where the prefix is parseable as a complete cardtext. That
-    happens to align with the failure boundary on real-world cards in
-    practice; pathological cases just return a smaller ``k``, which
-    is still strictly more information than the full-text label.
+    Cost is bounded at ``1 + len(sentences)`` parse calls per card. The
+    earlier version also did a word-by-word linear scan inside each
+    parse-error sentence to localize the failure boundary, but on
+    Earley-parser-speed cards (~10s per parse) that turned into many
+    minutes of silent work for cards with long failing sentences —
+    not worth the precision over per-sentence localization.
     """
     if parse_fn is None:
         # Local import: this module is loaded by the parser package; the
@@ -206,30 +178,10 @@ def find_parse_failure_region(
             continue
         r = parse(sentence, name=name)
         calls += 1
-        if r.ok:
-            sentences.append(SentenceStatus(sentence=sentence, kind="ok"))
-            continue
-        msg = r.error.message if r.error else None
-        kind = _classify(msg)
-        if kind != "parse-error":
-            sentences.append(SentenceStatus(
-                sentence=sentence, kind=kind, parse_error_label=msg,
-            ))
-            continue
-        # Word-level localization for parse-error sentences.
-        words = sentence.split()
-        ok_k = 0
-        for k in range(1, len(words) + 1):
-            prefix = " ".join(words[:k])
-            pr = parse(prefix, name=name)
-            calls += 1
-            if pr.ok or _is_parseable(pr.error.message if pr.error else None):
-                ok_k = k
+        msg = r.error.message if (r.error is not None) else None
+        kind = "ok" if r.ok else _classify(msg)
         sentences.append(SentenceStatus(
-            sentence=sentence,
-            kind="parse-error",
-            parseable_word_count=ok_k,
-            parse_error_label=msg,
+            sentence=sentence, kind=kind, parse_error_label=msg if kind != "ok" else None,
         ))
 
     return FailureRegion(
