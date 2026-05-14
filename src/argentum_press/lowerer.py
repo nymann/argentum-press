@@ -1277,3 +1277,6 @@ class KotlinLowerer:
     @effect.register  # ast=ast.AddManaExpression
     def _(self, expr: ast.AddManaExpression) -> str:
         return 'AddManaEffect()'
+    @effect.register  # ast=ast.SuspectExpression
+    def _(self, effect: ast.SuspectExpression) -> str:
+        return 'Effects.Suspect()'
