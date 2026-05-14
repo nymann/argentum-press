@@ -23,5 +23,8 @@ experiments/profiles/
 .combfind.db-shm
 .combfind.db-wal
 
+# Supervisor's per-dispatch context file (overwritten each recovery).
+.supervisor-context.json
+
 # Stray logs
 *.log
