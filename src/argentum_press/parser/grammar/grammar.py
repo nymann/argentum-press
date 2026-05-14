@@ -833,7 +833,7 @@ def getGrammar():
         ABILITYMODIFIER: "triggered" | "activated" | "mana" | "loyalty"
         COMBATSTATUSMODIFIER: "attacking" | "defending" | "attacked" | "blocking" | "blocked" | "active"
         KEYWORDSTATUSMODIFIER: "paired" | "kicked" | "face-up" | "face-down" | "transformed" | "enchanted" | "equipped"
-        | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" // TODO: ensure 'suspected' works properly
+        | "fortified" | "monstrous" | "regenerated" | "suspended" | "flipped" | "suspected" | "modified" // TODO: ensure 'suspected' works properly
         TAPPEDSTATUSMODIFIER: "tapped" | "untapped"
         EFFECTSTATUSMODIFIER: "named" | "chosen" | "chosen at random" | "revealed" | "returned" | "destroyed" | "exiled" | "died" | "countered" | "sacrificed"
         | "the target of a spell or ability" | "prevented" | "created" | "cast"
