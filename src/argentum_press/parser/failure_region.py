@@ -121,73 +121,154 @@ def _classify(message: str | None) -> str:
     return "unmodeled"
 
 
+def _classify_parse_result(r: Any) -> tuple[str, str | None]:
+    """Map a ParseResult to ``(kind, label_or_None)``.
+
+    Shared between the sequential walk and the ProcessPool worker so
+    classification can't drift between paths.
+    """
+    if r.ok:
+        return "ok", None
+    msg = r.error.message if (r.error is not None) else None
+    kind = _classify(msg)
+    return kind, (msg if kind != "ok" else None)
+
+
+def _pool_worker_init() -> None:
+    """ProcessPool initialiser: pre-compile the grammar in each worker.
+
+    Each worker is a fresh interpreter (macOS uses ``spawn``), so we
+    pay the ~10s grammar compile per worker on startup. Subsequent
+    ``parse()`` calls in that worker reuse the module-level
+    ``_PARSER`` cache for free.
+    """
+    from argentum_press.parser.transformer import _get_parser
+    _get_parser()
+
+
+def _pool_worker_parse(args: tuple[str, str]) -> tuple[str, str | None]:
+    """ProcessPool worker entry point. Must be module-level (picklable).
+
+    ``args = (sentence, name)``. Returns the same classification tuple
+    the sequential path uses.
+    """
+    sentence, name = args
+    from argentum_press.parser.transformer import parse
+    return _classify_parse_result(parse(sentence, name=name))
+
+
 def find_parse_failure_region(
-    oracle_text: str, *, name: str = "", parse_fn: ParseFn | None = None,
+    oracle_text: str,
+    *,
+    name: str = "",
+    parse_fn: ParseFn | None = None,
+    overall_label: str | None = None,
+    max_workers: int = 1,
 ) -> FailureRegion:
     """Locate the failure region in ``oracle_text``.
 
     Strategy:
 
-    1. Parse the full text to get the overall label and confirm whether
-       the failure is in the parser stage at all.
+    1. (Optional) Parse the full text to get the overall label. Skipped
+       when ``overall_label`` is supplied — the caller (typically
+       ``_format_parse_error_block``) already has the label from gap
+       classification and the re-parse is pure waste.
     2. Split into sentences and parse each in isolation. Sentences that
        parse (or fail at the lowerer with ``unmodeled-rule:``) are not
        the parser's problem; the ones that fail with ``parse-error:``
        are the candidate failure regions.
 
-    Cost is bounded at ``1 + len(sentences)`` parse calls per card. The
-    earlier version also did a word-by-word linear scan inside each
-    parse-error sentence to localize the failure boundary, but on
-    Earley-parser-speed cards (~10s per parse) that turned into many
-    minutes of silent work for cards with long failing sentences —
-    not worth the precision over per-sentence localization.
-    """
-    if parse_fn is None:
-        # Local import: this module is loaded by the parser package; the
-        # parse() entry point lives inside transformer.py and pulling it
-        # in at module scope risks circular imports during package init.
-        from argentum_press.parser.transformer import parse as parse_fn
-    parse = parse_fn
+    Cost is bounded at ``N`` parse calls when ``overall_label`` is
+    supplied, ``1 + N`` otherwise. Each Earley parse is ~10–30s on real
+    card-shaped text.
 
+    Parallelism: ``max_workers > 1`` dispatches the per-sentence parses
+    to a :class:`ProcessPoolExecutor` whose workers pre-compile the
+    grammar via :func:`_pool_worker_init`. Wall time drops from
+    ``N × parse_time`` to roughly ``grammar_compile + parse_time``
+    (workers compile in parallel). Falls back to sequential when
+    ``parse_fn`` is provided (test injection — pools can't pickle
+    in-process fakes) or ``max_workers <= 1``.
+    """
     text = oracle_text.strip()
-    calls = 0
     if not text:
         return FailureRegion(
             fully_parses=True,
-            overall_label=None,
+            overall_label=overall_label,
             sentences=(),
             bisection_calls=0,
         )
 
-    overall = parse(text, name=name)
-    calls += 1
-    if overall.ok:
+    # --- step 1: confirm failure + get overall label -----------------
+    calls = 0
+    if overall_label is None:
+        # Test path or call-sites that don't yet know the label.
+        fn = parse_fn
+        if fn is None:
+            from argentum_press.parser.transformer import parse as fn
+        overall = fn(text, name=name)
+        calls += 1
+        if overall.ok:
+            return FailureRegion(
+                fully_parses=True,
+                overall_label=None,
+                sentences=(),
+                bisection_calls=calls,
+            )
+        overall_label = overall.error.message if overall.error else None
+    # else: caller supplied overall_label; skip the redundant parse.
+
+    # --- step 2: per-sentence walk -----------------------------------
+    raw_sentences = [s.strip() for s in _SENTENCE_RE.split(text)]
+    raw_sentences = [s for s in raw_sentences if s]
+
+    # Parallel path only fires when no injected parse_fn (tests) and the
+    # caller asked for >1 workers and we actually have more than one
+    # sentence to dispatch — single-sentence cards aren't worth the
+    # pool-setup overhead.
+    use_pool = parse_fn is None and max_workers > 1 and len(raw_sentences) > 1
+    if use_pool:
+        from concurrent.futures import ProcessPoolExecutor
+        workers = min(max_workers, len(raw_sentences))
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_pool_worker_init,
+        ) as pool:
+            classifications = list(pool.map(
+                _pool_worker_parse,
+                [(s, name) for s in raw_sentences],
+            ))
+        sentences = tuple(
+            SentenceStatus(sentence=s, kind=kind, parse_error_label=label)
+            for s, (kind, label) in zip(raw_sentences, classifications, strict=True)
+        )
+        calls += len(raw_sentences)
         return FailureRegion(
-            fully_parses=True,
-            overall_label=None,
-            sentences=(),
+            fully_parses=False,
+            overall_label=overall_label,
+            sentences=sentences,
             bisection_calls=calls,
         )
 
-    overall_label = overall.error.message if overall.error else None
+    # Sequential fallback (the test-injected path and the
+    # single-sentence path both land here).
+    fn = parse_fn
+    if fn is None:
+        from argentum_press.parser.transformer import parse as fn
 
-    sentences: list[SentenceStatus] = []
-    for sentence in _SENTENCE_RE.split(text):
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        r = parse(sentence, name=name)
+    sentence_statuses: list[SentenceStatus] = []
+    for sentence in raw_sentences:
+        r = fn(sentence, name=name)
         calls += 1
-        msg = r.error.message if (r.error is not None) else None
-        kind = "ok" if r.ok else _classify(msg)
-        sentences.append(SentenceStatus(
-            sentence=sentence, kind=kind, parse_error_label=msg if kind != "ok" else None,
+        kind, label = _classify_parse_result(r)
+        sentence_statuses.append(SentenceStatus(
+            sentence=sentence, kind=kind, parse_error_label=label,
         ))
 
     return FailureRegion(
         fully_parses=False,
         overall_label=overall_label,
-        sentences=tuple(sentences),
+        sentences=tuple(sentence_statuses),
         bisection_calls=calls,
     )
 
