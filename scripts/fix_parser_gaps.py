@@ -541,6 +541,80 @@ def stream_claude(prompt: str) -> tuple[int, str]:
     return proc.returncode, last_text
 
 
+def _indent(text: str, prefix: str = "  ") -> str:
+    """Indent every line of ``text`` by ``prefix``."""
+    return "\n".join(prefix + ln for ln in text.splitlines())
+
+
+def _truncate(text: str, n: int) -> str:
+    """One-line truncate with ellipsis marker (keeps strings short for diff preview)."""
+    text = text.replace("\n", " ")
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _cap_lines(text: str, max_lines: int, indent: str = "  ") -> str:
+    """Cap a multi-line block to ``max_lines``, appending a ``… (N more lines)`` marker.
+
+    Each line is prefixed with ``indent``; the marker is also indented.
+    """
+    lines = text.splitlines() or [""]
+    if len(lines) <= max_lines:
+        return "\n".join(indent + ln for ln in lines)
+    kept = lines[:max_lines]
+    extra = len(lines) - max_lines
+    body = "\n".join(indent + ln for ln in kept)
+    return f"{body}\n{indent}{DIM}… ({extra} more lines){RESET}"
+
+
+def _render_tool_use(name: str, inp: dict[str, Any]) -> str:
+    """Render a single ``tool_use`` event into a (possibly multi-line) string."""
+    if name == "Bash":
+        cmd = str(inp.get("command", ""))
+        desc = inp.get("description")
+        head = f"{GREEN}$ {cmd}{RESET}"
+        if desc:
+            head += f"\n  {DIM}# {desc}{RESET}"
+        return head
+    if name == "Read":
+        path = inp.get("file_path", "?")
+        extras = []
+        if "offset" in inp:
+            extras.append(f"offset={inp['offset']}")
+        if "limit" in inp:
+            extras.append(f"limit={inp['limit']}")
+        tail = f" [{', '.join(extras)}]" if extras else ""
+        return f"{CYAN}read{RESET} {DIM}{path}{tail}{RESET}"
+    if name == "Edit":
+        path = inp.get("file_path", "?")
+        old = _truncate(str(inp.get("old_string", "")), 100)
+        new = _truncate(str(inp.get("new_string", "")), 100)
+        replace_all = inp.get("replace_all")
+        flag = f" {DIM}(replace_all){RESET}" if replace_all else ""
+        return (
+            f"{CYAN}edit{RESET} {path}{flag}\n"
+            f"  {DIM}- {old}{RESET}\n"
+            f"  {DIM}+ {new}{RESET}"
+        )
+    if name == "Write":
+        path = inp.get("file_path", "?")
+        return f"{CYAN}write{RESET} {path}"
+    if name == "Grep":
+        pattern = inp.get("pattern", "?")
+        path = inp.get("path", ".")
+        return f"{CYAN}grep{RESET} {pattern} {DIM}in {path}{RESET}"
+    if name == "Glob":
+        pattern = inp.get("pattern", "?")
+        return f"{CYAN}glob{RESET} {pattern}"
+    # Fallback: pretty-print JSON over multiple lines if it has >1 key, capped.
+    inp = inp or {}
+    if len(inp) > 1:
+        pretty = json.dumps(inp, indent=2, ensure_ascii=False)
+        capped = _cap_lines(pretty, 8, indent="  ")
+        return f"{GREEN}-> {name}{RESET}\n{capped}"
+    payload = json.dumps(inp, ensure_ascii=False)
+    return f"{GREEN}-> {name}{RESET} {payload}"
+
+
 def _render_event(ev: dict[str, Any]) -> str | None:
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
@@ -549,20 +623,51 @@ def _render_event(ev: dict[str, Any]) -> str | None:
         out: list[str] = []
         for c in ev.get("message", {}).get("content", []) or []:
             if c.get("type") == "text":
-                out.append(f"{CYAN}>> {c.get('text', '').replace(chr(10), ' / ')}{RESET}")
+                text = c.get("text", "") or ""
+                # Preserve newlines; color only the marker so multi-line text
+                # reads naturally.
+                first, _, rest = text.partition("\n")
+                if rest:
+                    out.append(f"{CYAN}>>{RESET} {first}\n{rest}")
+                else:
+                    out.append(f"{CYAN}>>{RESET} {first}")
             elif c.get("type") == "tool_use":
-                payload = json.dumps(c.get("input") or {})[:240]
-                out.append(f"{GREEN}-> {c.get('name')}{RESET} {payload}")
+                out.append(_render_tool_use(c.get("name") or "?", c.get("input") or {}))
         return "\n".join(out) if out else None
     if t == "user":
         out: list[str] = []
         for c in ev.get("message", {}).get("content", []) or []:
             if c.get("type") == "tool_result":
-                body = str(c.get("content") or "").replace("\n", " / ")[:240]
-                if c.get("is_error"):
-                    out.append(f"{RED}<- ERROR {body}{RESET}")
+                raw = c.get("content")
+                # Tool results sometimes arrive as a list of content blocks
+                # ([{"type":"text","text":"..."}]). Normalize to a string.
+                if isinstance(raw, list):
+                    parts: list[str] = []
+                    for blk in raw:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            parts.append(str(blk.get("text", "")))
+                        elif isinstance(blk, dict):
+                            parts.append(json.dumps(blk, ensure_ascii=False))
+                        else:
+                            parts.append(str(blk))
+                    body = "\n".join(parts)
                 else:
-                    out.append(f"{DIM}<- {body}{RESET}")
+                    body = str(raw or "")
+                is_err = bool(c.get("is_error"))
+                color = RED if is_err else CYAN
+                marker = "→ ERROR" if is_err else "→"
+                if not body.strip():
+                    out.append(f"  {color}{marker}{RESET} {DIM}(no output){RESET}")
+                    continue
+                capped = _cap_lines(body, 20, indent="  ")
+                # Recolor the leading "  " on the first line into a marker.
+                # We replace only the first occurrence so the rest of the
+                # block stays indented but uncolored.
+                if capped.startswith("  "):
+                    first_line, nl, rest = capped[2:].partition("\n")
+                    head = f"  {color}{marker}{RESET} {first_line}"
+                    capped = head + (nl + rest if nl else "")
+                out.append(capped)
         return "\n".join(out) if out else None
     if t == "result":
         return (
