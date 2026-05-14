@@ -65,19 +65,29 @@ against — see `issues/parser-small-fixes.md` for the reasoning.)
 
 ## Triage workflow
 
-- `INBOX.md` — one-line GTD pointers at issue files
+- `INBOX.md` — one-line GTD pointers at issue files.
 - `issues/*.md` — one file per open thread (parser gaps, AST
-  coverage, architectural calls)
+  coverage, architectural calls).
 - `scripts/fix_parser_gaps.py <set> <project-dir>` — Python
-  orchestrator: imports `argentum_press.diagnose` directly, computes
-  per-gap context deterministically (structured lark error,
-  preprocessed text, grammar rule index + definition for
-  `unmodeled-rule:X`, ranked handler map and gap-class definition for
-  lower gaps, engine DSL hints, file sizes, recent commits) and hands
-  it to a fresh `claude -p` session. Runs pytest itself after the
-  agent exits and aborts on red. Commits per iteration. Bails on
-  no-progress (same label twice). Flags: `--dry-run`,
-  `--max-iter N`, `--no-commit`, `--allow-dirty`.
+  orchestrator. Each iteration spawns
+  `python -m argentum_press._fix_loop_gap` as a fresh subprocess so the
+  agent's last edit to grammar/transformer/lowerer takes effect
+  (in-process re-import would keep the stale module via `sys.modules`).
+  The worker streams NDJSON progress + a final result event. The
+  orchestrator computes per-gap context deterministically (rule
+  definition, handler map, engine DSL hints, file sizes, recent
+  commits), hands it to a fresh `claude -p`, runs pytest after the
+  agent exits and aborts on red. Commits per iteration; bails on
+  no-progress (same label twice). Flags: `--dry-run`, `--max-iter N`,
+  `--no-commit`, `--allow-dirty`.
+- `argentum_press.parse_cache` — opt-in disk cache
+  (`ARGENTUM_PARSE_CACHE=1`) for `ParseResult`, keyed by
+  `sha256(name + oracle_text)`. The fix-loop turns it on; tests and
+  `add-set` get the uncached path. After each parse-kind fix the
+  orchestrator calls `invalidate_label(L)` to drop matching entries;
+  everything else stays cached. Earley parses are 1–40s/card, so the
+  cache is the difference between re-scanning the whole set every
+  iteration and only re-parsing the cards the latest fix affects.
 
 The orchestrator owns commits — the per-iteration `claude -p`
 sessions must not commit (they get a fresh context each time and
