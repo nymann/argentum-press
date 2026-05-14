@@ -12,6 +12,7 @@ Public entry points live in :mod:`argentum_press.parser.transformer`:
 from argentum_press.parser.transformer import (
     LoweringIncomplete,
     ParseError,
+    ParseErrorDetails,
     ParseResult,
     parse,
     transform,
@@ -20,6 +21,7 @@ from argentum_press.parser.transformer import (
 __all__ = [
     "LoweringIncomplete",
     "ParseError",
+    "ParseErrorDetails",
     "ParseResult",
     "parse",
     "transform",

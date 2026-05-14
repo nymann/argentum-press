@@ -32,7 +32,7 @@ from typing import Any
 from . import existing
 from .classify import Bucket1, Bucket2, classify
 from .lowerer import KotlinLowerer
-from .parser import ast as ast_module
+from .parser import ParseErrorDetails, ast as ast_module
 from .parser import parse
 from .template import is_basic_land
 
@@ -51,6 +51,14 @@ class Gap:
     ``"unmodeled-rule:fightexpression"`` or ``"parse-error:..."``). For
     ``kind="lower"`` it's the qualified class name of the missing AST
     node (e.g. ``"argentum_press.parser.ast.abilities.ActivatedAbility"``)."""
+
+    parse_details: ParseErrorDetails | None = None
+    """Rich Lark exception data when ``label`` starts with ``parse-error:`` -
+    surfaces line/col, expected-tokens list, and a context marker so the
+    fix-loop orchestrator can render an actionable parse-error block without
+    re-running the parser. Not serialised by :meth:`to_json_dict` (the CLI
+    output stays compact); the orchestrator imports :class:`Gap` directly
+    and reads the field as a Python object."""
 
     def to_json_dict(self) -> dict[str, str]:
         return {
@@ -108,6 +116,7 @@ def inspect_card(
                 card_name=card["name"],
                 oracle_text=card.get("oracle_text", "") or "",
                 label=result.error.message,
+                parse_details=result.error.details,
             ),
             None,
         )

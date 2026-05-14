@@ -199,12 +199,55 @@ class LoweringIncomplete(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class ParseErrorDetails:
+    """Structured fields extracted from a Lark :class:`UnexpectedInput`.
+
+    Lark's ``str(exc)`` is rich (line/col, expected-tokens list, context
+    marker) but multi-line. :attr:`ParseError.message` keeps only the first
+    line so it stays grep-friendly as a label, which throws away the most
+    actionable signal for grammar fixes. This struct recovers it so the
+    fix-loop orchestrator can surface the full picture without re-running
+    the parser.
+    """
+
+    preprocessed_text: str
+    """The exact text Lark saw - i.e. after :func:`_preprocess`. Useful when
+    debugging why a card fails: the raw oracle text and the preprocessed
+    form often diverge in subtle ways (~ substitution, contraction
+    expansion, quoted-period sentinel)."""
+
+    line: int
+    column: int
+    pos_in_stream: int
+
+    unexpected: str
+    """For ``UnexpectedToken`` the token string; for ``UnexpectedCharacters``
+    the offending character; ``"<EOF>"`` for ``UnexpectedEOF``."""
+
+    expected: tuple[str, ...]
+    """Sorted terminal / rule names Lark would have accepted at the failure
+    point. Empty tuple if the exception didn't expose a candidate set."""
+
+    context: str
+    """Output of ``e.get_context(preprocessed_text)`` - the input around the
+    failure column with a ``^`` marker. Already multi-line."""
+
+    raw_message: str
+    """Full ``str(exc)`` from Lark, including all of the above pre-formatted.
+    Useful as a fallback when the structured fields are empty."""
+
+
+@dataclass(frozen=True, slots=True)
 class ParseError:
     """Surface-level failure record returned by :func:`parse`."""
 
     kind: str  # "incomplete", "invalid", "ambiguous"
     message: str
     position: int | None = None
+    details: ParseErrorDetails | None = None
+    """Rich Lark exception data for ``parse-error:`` failures. ``None`` for
+    ``unmodeled-rule:`` (transformer) and ``lark-error:`` (other Lark
+    failures) which don't carry the same UnexpectedInput shape."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1821,6 +1864,55 @@ def transform(tree: Tree) -> Card:
     return result
 
 
+def _lark_error_details(
+    exc: UnexpectedInput, preprocessed: str, raw_message: str
+) -> ParseErrorDetails:
+    # Lark's UnexpectedInput hierarchy has three concrete subclasses with
+    # slightly different attrs:
+    #   UnexpectedToken       .token / .expected
+    #   UnexpectedCharacters  .char  / .allowed
+    #   UnexpectedEOF         .expected (no .token; we synthesise <EOF>)
+    # All three expose .line / .column / .pos_in_stream via the base.
+    token = getattr(exc, "token", None)
+    char = getattr(exc, "char", None)
+    if token is not None:
+        unexpected = f"{token!s} (type={token.type!s})" if hasattr(token, "type") else str(token)
+    elif char is not None:
+        unexpected = repr(char)
+    else:
+        unexpected = "<EOF>"
+
+    expected_set: set[str] = set()
+    for attr in ("expected", "allowed", "accepts"):
+        v = getattr(exc, attr, None)
+        if v:
+            expected_set.update(str(x) for x in v)
+    # Earley's UnexpectedEOF leaves .expected as []. The full token list is
+    # only in str(exc), formatted as "\t* TOKEN" after "Expected one of:".
+    # Fall back to scraping it so the orchestrator has something to show.
+    if not expected_set and "Expected one of" in raw_message:
+        for line in raw_message.splitlines():
+            stripped = line.lstrip().lstrip("*").strip()
+            if stripped and line.lstrip().startswith("*"):
+                expected_set.add(stripped)
+
+    try:
+        context = exc.get_context(preprocessed)
+    except Exception:
+        context = ""
+
+    return ParseErrorDetails(
+        preprocessed_text=preprocessed,
+        line=int(getattr(exc, "line", 0) or 0),
+        column=int(getattr(exc, "column", 0) or 0),
+        pos_in_stream=int(getattr(exc, "pos_in_stream", 0) or 0),
+        unexpected=unexpected,
+        expected=tuple(sorted(expected_set)),
+        context=context,
+        raw_message=raw_message,
+    )
+
+
 def parse(card: dict | str, *, name: str | None = None) -> ParseResult:
     """Full pipeline: Scryfall dict or raw oracle text -> :class:`ParseResult`.
 
@@ -1844,7 +1936,12 @@ def parse(card: dict | str, *, name: str | None = None) -> ParseResult:
     try:
         tree = parser.parse(preprocessed)
     except UnexpectedInput as e:
-        return ParseResult(error=ParseError(kind="incomplete", message=f"parse-error:{e!s}".splitlines()[0]))
+        raw = str(e)
+        return ParseResult(error=ParseError(
+            kind="incomplete",
+            message=f"parse-error:{raw}".splitlines()[0],
+            details=_lark_error_details(e, preprocessed, raw),
+        ))
     except LarkError as e:
         return ParseResult(error=ParseError(kind="invalid", message=f"lark-error:{e!s}".splitlines()[0]))
 
@@ -1859,6 +1956,7 @@ __all__ = [
     "CardTransformer",
     "LoweringIncomplete",
     "ParseError",
+    "ParseErrorDetails",
     "ParseResult",
     "parse",
     "transform",

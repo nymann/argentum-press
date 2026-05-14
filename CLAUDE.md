@@ -68,10 +68,17 @@ against — see `issues/parser-small-fixes.md` for the reasoning.)
 - `INBOX.md` — one-line GTD pointers at issue files
 - `issues/*.md` — one file per open thread (parser gaps, AST
   coverage, architectural calls)
-- `scripts/fix-parser-gaps.sh <set> <project-dir>` — runs `diagnose`
-  in a loop, dispatches each gap to a fresh `claude -p` session to
-  fix one card and re-run tests. Bails on no-progress (same label
-  twice) or `max-iter`.
+- `scripts/fix_parser_gaps.py <set> <project-dir>` — Python
+  orchestrator: imports `argentum_press.diagnose` directly, computes
+  per-gap context deterministically (structured lark error,
+  preprocessed text, grammar rule index + definition for
+  `unmodeled-rule:X`, ranked handler map and gap-class definition for
+  lower gaps, engine DSL hints, file sizes, recent commits) and hands
+  it to a fresh `claude -p` session. Runs pytest itself after the
+  agent exits and aborts on red. Commits per iteration. Bails on
+  no-progress (same label twice). Flags: `--dry-run`,
+  `--max-iter N`, `--no-commit`, `--allow-dirty`.
 
-Don't commit from inside the fix-loop — the outer process owns
-commits.
+The orchestrator owns commits — the per-iteration `claude -p`
+sessions must not commit (they get a fresh context each time and
+have no view of the prior iteration's work).
