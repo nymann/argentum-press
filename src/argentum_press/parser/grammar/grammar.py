@@ -59,6 +59,7 @@ def getGrammar():
         !isstatement: declarationorreference ("is" | "was" | "are" "each"?) ("still"|"not")? (declarationorreference | characteristicexpression | statement)
         !hasstatement: declarationorreference? ("has"|"have"|"had") (abilitysequencestatement | characteristicexpression | beexpression | statement)
         | declarationorreference?  ("has"|"have"|"had") ("a"|valueexpression) countertype "counter"["s"] "on" declarationorreference -> hascounterstatement
+        | declarationorreference? ("has"|"have"|"had") "\\"" statementblock "\\"" "."? "\\""? -> hasquotedstatement
         isntstatement: declarationorreference? "is" "not" statement
         canstatement: declarationorreference? "can" statement
         | declarationorreference? "can" "not" statement -> cantstatement
