@@ -23,6 +23,11 @@ dependencies = [
     "jsonschema>=4.23",
     # anthropic: Claude SDK for the playbook's tool_use-constrained calls.
     "anthropic>=0.40",
+    # scikit-learn: TF-IDF + cosine for L3's similar-handlers retrieval —
+    # replaces what was an LLM call for ~5 nearest-neighbour AST class
+    # names. Brute-force over ~400 register handlers; no other ML
+    # machinery needed.
+    "scikit-learn>=1.5",
 ]
 
 [project.scripts]

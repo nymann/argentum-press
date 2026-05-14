@@ -323,11 +323,9 @@ def _red_then_green() -> Any:
 
 def test_driver_happy_path_register_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Use a class that L5a picks register-handler for. AwakenAbility ends in
-    # Ability and isn't in any isinstance branch.
+    # Ability and isn't in any isinstance branch. L3 is now deterministic
+    # (no scripted block needed); only L4 strategy + L5b plan call the LLM.
     blocks = [
-        _FakeBlock(type="tool_use", name="emit_ast_summary", input={
-            "summary": "Awaken N", "mtg_term": "awaken", "similar_handlers": ["EnchantAbility"],
-        }),
         _FakeBlock(type="tool_use", name="emit_strategy", input={
             "strategy": "stub", "target_dsl_symbol": "Effects.Awaken",
             "justification": "no engine surface yet",
@@ -363,10 +361,9 @@ def test_driver_happy_path_register_handler(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_driver_retry_on_pytest_red(tmp_path: Path):
+    # L3 is deterministic now; scripted blocks are L4 strategy, L5b plan,
+    # and the L9 retry plan after the first pytest fails.
     blocks = [
-        _FakeBlock(type="tool_use", name="emit_ast_summary", input={
-            "summary": "Awaken N", "mtg_term": "awaken", "similar_handlers": [],
-        }),
         _FakeBlock(type="tool_use", name="emit_strategy", input={
             "strategy": "stub", "target_dsl_symbol": "Effects.Awaken",
             "justification": "no engine surface yet",
@@ -424,10 +421,8 @@ def test_driver_aborts_when_ast_class_unknown(tmp_path: Path):
 
 
 def test_driver_aborts_on_libcst_failure(tmp_path: Path):
+    # L3 is deterministic; scripted blocks are L4 strategy + L5b plan.
     blocks = [
-        _FakeBlock(type="tool_use", name="emit_ast_summary", input={
-            "summary": "x", "mtg_term": "x", "similar_handlers": [],
-        }),
         _FakeBlock(type="tool_use", name="emit_strategy", input={
             "strategy": "stub", "target_dsl_symbol": "Effects.Awaken",
             "justification": "x",
@@ -472,10 +467,8 @@ def test_driver_aborts_when_live_classify_unchanged(
         lower, "_live_card_still_failing_lower", lambda **_kw: True
     )
 
+    # L3 is deterministic; scripted blocks are L4 strategy + L5b plan.
     blocks = [
-        _FakeBlock(type="tool_use", name="emit_ast_summary", input={
-            "summary": "Awaken N", "mtg_term": "awaken", "similar_handlers": [],
-        }),
         _FakeBlock(type="tool_use", name="emit_strategy", input={
             "strategy": "stub", "target_dsl_symbol": "Effects.Awaken",
             "justification": "no engine surface yet",

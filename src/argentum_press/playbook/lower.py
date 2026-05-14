@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import PlaybookResult, StepLog, cache, context, driver as _driver_mod, edits, heuristics, llm, log_step
+from . import PlaybookResult, StepLog, cache, context, driver as _driver_mod, edits, heuristics, l3_index, llm, log_step
 
 
 # Pytest invocation reused across the success path and the retry. We mirror
@@ -29,13 +29,11 @@ PYTEST_TARGETS = (
 )
 
 
-# L3 runs on a local MLX-hosted Qwen3-Coder-Next-4bit (non-thinking
-# variant — the thinking flavours break structured JSON output). The
-# summary is small + bounded; local is free and avoids the rate-limit
-# envelope. The MLX server is the OpenAI-compatible llm router on
-# http://localhost:8080. Model names containing "/" route there
-# automatically (see llm._is_local_model).
-L3_MODEL = "mlx-community/Qwen3-Coder-Next-4bit"
+# L3 is deterministic (no LLM) — TF-IDF retrieval over the existing
+# @register handlers, plus heuristics for summary/mtg_term. See
+# l3_index.deterministic_l3. Kept as a constant for trace-log
+# compatibility with the previous LLM-backed step.
+L3_MODEL = "deterministic-tfidf"
 
 # Sonnet 4.6 for the structured-code-emission and picker steps (L4 / L5)
 # and their cross-playbook aliases (P3 picker, U3/U4 code emission). Opus
@@ -292,38 +290,18 @@ def run(
         engine_hints_chars=len(ctx.engine_hints or ""),
     )
 
-    # ---- L3: summary (cacheable) ----------------------------------------
+    # ---- L3: summary (deterministic + cacheable) -----------------------
+    # TF-IDF over @register handlers for `similar_handlers`; heuristics
+    # for `summary` and `mtg_term`. Sub-ms on a fresh build; the disk
+    # cache is kept so we don't rebuild the index when the same AST
+    # class shows up twice in a session.
     t0 = time.monotonic()
     summary = cache.get(ctx.ast_class.source, root=cache_root)
     if summary is None:
-        exemplar_text = _exemplars_for_summary(ctx)
-        blocks = llm.build_summary_blocks(ctx.ast_class.source, exemplar_text)
-        user_prompt = (
-            f"Summarise the AST class {ctx.ast_class.classname} for the playbook. "
-            f"Return a one-sentence summary, the MTG term it represents, and "
-            f"2-3 existing handler names from the exemplars that look most "
-            f"similar."
-        )
-        try:
-            call = _call(
-                tool_name="emit_ast_summary",
-                system_prompt=llm.SYSTEM_PROMPT,
-                static_context_blocks=blocks,
-                user_prompt=user_prompt,
-                model=l3_model,
-                max_tokens=512,
-                pool=pool,
-                client=client,
-            )
-            summary = call.arguments
-            cache.put(ctx.ast_class.source, summary, root=cache_root)
-            _log_step(steps, "L3", "llm", t0, cache="miss", summary=summary)
-            _say(f"L3 (LLM): {_short(summary['summary'], 100)}")
-        except Exception as e:  # noqa: BLE001
-            result.outcome = "aborted-l3"
-            _log_step(steps, "L3", "llm", t0, error=str(e))
-            result.steps = steps
-            return result
+        summary = l3_index.deterministic_l3(ctx.ast_class, ctx.exemplars)
+        cache.put(ctx.ast_class.source, summary, root=cache_root)
+        _log_step(steps, "L3", "orch", t0, cache="miss", summary=summary)
+        _say(f"L3 (deterministic): {_short(summary['summary'], 100)}")
     else:
         _log_step(steps, "L3", "cache", t0, cache="hit", summary=summary)
         _say(f"L3 (cache hit): {_short(summary['summary'], 100)}")

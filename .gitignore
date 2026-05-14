@@ -18,5 +18,10 @@ experiments/playbook-traces/
 experiments/runs/
 experiments/profiles/
 
+# combfind SQLite index — local-only, rebuilt by `combfind init`.
+.combfind.db
+.combfind.db-shm
+.combfind.db-wal
+
 # Stray logs
 *.log
