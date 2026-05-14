@@ -847,6 +847,13 @@ class KotlinLowerer:
             # has no top-level except-replacement Effect surface yet. Emit a
             # stub so the gap moves past ExceptStatement.
             return ("Effects.Except()",)
+        if isinstance(stmt, ast.TriggerRestrictionStatement):
+            # "this ability triggers only once each turn" — caps the trigger
+            # frequency of a sibling triggered ability in the same RegularAbility
+            # block. argentum-engine has no top-level trigger-restriction Effect
+            # surface yet; emit a stub so the gap moves past
+            # TriggerRestrictionStatement to whatever the next unhandled node is.
+            return ("Effects.TriggerRestriction()",)
         if isinstance(stmt, ast.ModalExpression):
             # "choose one — • <option1> • <option2>" — the rich AST carries
             # each modal option as a ModalChoice with its own block, and the
