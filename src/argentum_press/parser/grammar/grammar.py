@@ -59,7 +59,8 @@ def getGrammar():
         | wherestatement
         | thereexistsstatement
 
-        !isstatement: declarationorreference ("is" | "was" | "are" "each"?) ("still"|"not")? (declarationorreference | characteristicexpression | statement)
+        !isstatement: declarationorreference? ("is" | "was" | "are" "each"?) ("still"|"not")? (declarationorreference | characteristicexpression | statement) inadditiontypesexpression?
+        inadditiontypesexpression: "in" "addition" "to" possessiveterm? "other" "type"["s"]
         !hasstatement: declarationorreference? ("has"|"have"|"had") (abilitysequencestatement | characteristicexpression | beexpression | statement)
         | declarationorreference?  ("has"|"have"|"had") ("a"|valueexpression) countertype "counter"["s"] "on" declarationorreference -> hascounterstatement
         | declarationorreference? ("has"|"have"|"had") abilitysequencestatement "and" "\\"" statementblock "\\"" "."? "\\""? -> hasmixedstatement
@@ -644,6 +645,8 @@ def getGrammar():
         castexpression: playerdeclref? "next"? "cast"["s"] declarationorreference (castmodifier ("and" castmodifier)?)* timeexpression?
         castmodifier: "without" "paying" "its" "mana" "cost" -> castwithoutpaying //[TODO: We may be able to fold this into the pay-expression]
         | "as" "though" beingstatement -> castasthough
+        | locationexpression -> castfromlocation
+        | "by" "discarding" cardexpression "in" "addition" "to" "paying" possessiveterm? "other" "cost"["s"] -> castbyalternatecost
         chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
         controlsexpression: playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
         gaincontrolexpression: playerdeclref? ("gain"["s"] | "gained") "control" "of" declarationorreference
@@ -831,7 +834,7 @@ def getGrammar():
         | "surrakar" | "survivor" | "tetravite" | "thalakos" | "thopter" | "thrull" | "treefolk" | "trilobite" | "triskelavite"
         | "troll" | "turtle" | "unicorn" | "vampire" | "vedalken" | "viashino" | "villain" | "volver" | "wall" | "warrior" | "weird"
         | ("werewolf"|"werewolves") | "whale" | "wizard" | ("wolf"|"wolves") | "wolverine" | "wombat" | "worm" | "wraith" | "wurm" | "yeti" 
-        | "zombie" | "zubera" | "mouse"
+        | "zombie" | "zubera" | "mouse" | "symbiote"
 
         SUBTYPEPLANAR: "alara" | "arkhos" | "azgol" | "belenon" | "bolas’s meditation realm"
         | "dominaria" | "equilor" | "ergamon" | "fabacin" | "innistrad" | "iquatana" | "ir" 
