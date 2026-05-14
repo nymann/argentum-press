@@ -676,3 +676,10 @@ class HarnessExpression(EffectExpression):
     """``harness <declarationorreference>`` — harness a permanent or reference, gaining control or use of it."""
 
     target: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CastPostfixExpression(EffectExpression):
+    """``<player> cast`` — postfix reference to a player performing a cast action, used as a trigger condition or effect qualifier."""
+
+    player: Expression | None = None
