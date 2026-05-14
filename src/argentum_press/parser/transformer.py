@@ -129,6 +129,7 @@ from argentum_press.parser.ast import (
     MayStatement,
     MiracleAbility,
     ModalChoice,
+    ModalExpression,
     ModularAbility,
     MorphAbility,
     Name,
@@ -1285,6 +1286,14 @@ class CardTransformer(Transformer):
         if block is None:
             raise LoweringIncomplete("modalchoice-without-block")
         return ModalChoice(block=block, ability_word=ability_word)
+
+    def modalstatement(self, items):
+        # "choose" valuecardinal DASH (modalchoiceexpression)+
+        # DASH token is preserved in items; filter it out.
+        rest = [it for it in items if not (isinstance(it, Token) and str(it) == "—")]
+        number_of_choices = rest[0]
+        options = tuple(rest[1:])
+        return ModalExpression(number_of_choices=number_of_choices, options=options)
 
     def activationstatement(self, items):
         # `<cost> : <statementblock>` — body of an activated ability.
