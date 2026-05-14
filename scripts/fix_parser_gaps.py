@@ -532,7 +532,16 @@ def stream_claude(prompt: str) -> tuple[int, str]:
             continue
         text = _render_event(ev)
         if text is not None:
-            stamp(text)
+            # Tool results are visually attached to the preceding tool_use
+            # (often multi-line file content, sometimes 20+ lines). A second
+            # [HH:MM:SS] on the first line of that block reads as a separate
+            # event, fights with the highlighting, and adds nothing — the
+            # tool_use stamp already carries the time. Print bare so the
+            # output sits cleanly under its command.
+            if ev.get("type") == "user":
+                print(text, flush=True)
+            else:
+                stamp(text)
         if ev.get("type") == "assistant":
             for c in ev.get("message", {}).get("content", []) or []:
                 if c.get("type") == "text":
