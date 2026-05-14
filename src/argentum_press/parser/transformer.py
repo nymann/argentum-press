@@ -1442,6 +1442,12 @@ class CardTransformer(Transformer):
             return BeingStatement(rhs=non_token[0])
         return BeingStatement(lhs=non_token[0], rhs=non_token[-1])
 
+    def becomesstatement(self, items):
+        # `<subject>? become[s] <rhs>` -> BeingStatement.
+        if len(items) == 1:
+            return BeingStatement(rhs=items[0])
+        return BeingStatement(lhs=items[0], rhs=items[1])
+
     def costincreasestatement(self, items):
         # `<subject> cost[s] <mana> more to cast/activate` — literal strings
         # are dropped by the grammar, leaving the declref and the mana symbol.
