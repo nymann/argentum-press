@@ -1,13 +1,22 @@
 # pyright: basic
-"""Deterministic context gathering for the lower-gap playbook (L0, L1, L2).
+"""Deterministic context gathering for the three playbooks.
 
-These steps run every iteration at zero LLM cost. They read files from the
-repo via libcst (for the AST classes and the lowerer handler map) and shell
-out to ripgrep for the engine DSL hints. Output is a plain
-:class:`LowerContext` dataclass the playbook driver passes into each LLM call.
+Lower-gap (L0/L1/L2): :class:`AstClassInfo`, :class:`LowererExemplars`,
+:func:`engine_dsl_hints`, :func:`gather`.
+
+Parse-error (P0/P1/P2): :func:`grammar_rule_index`,
+:func:`grammar_rule_literals`, :func:`rank_candidate_parent_rules`,
+:func:`dump_rule_definitions`.
+
+Unmodeled-rule (U0/U1/U2): :func:`list_ast_modules`,
+:func:`recent_transformer_exemplars`.
+
+All run every iteration at zero LLM cost. They read files from the repo via
+libcst / text scanning and shell out to git for recent commit diffs.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +39,9 @@ def _repo_root() -> Path:
 REPO = _repo_root()
 AST_DIR = REPO / "src/argentum_press/parser/ast"
 LOWERER = REPO / "src/argentum_press/lowerer.py"
+GRAMMAR = REPO / "src/argentum_press/parser/grammar/grammar.py"
+TRANSFORMER = REPO / "src/argentum_press/parser/transformer.py"
+AST_INIT = AST_DIR / "__init__.py"
 
 
 # ---------------------------------------------------------------------------
@@ -387,3 +399,349 @@ def filter_exemplars_for_pattern(
             yield f"# in {b.function}\n{b.branch_source}"
         return
     raise ValueError(f"unknown exemplar pattern: {pattern!r}")
+
+
+# ---------------------------------------------------------------------------
+# Parse-error context (P1, P2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GrammarRule:
+    """One rule definition extracted from the grammar's triple-quoted string."""
+
+    name: str
+    start_line: int  # 1-based, line carrying the rule declaration
+    end_line: int    # 1-based, last line of the rule body (inclusive)
+    source: str      # the full block text, joined with newlines
+    literals: tuple[str, ...]  # quoted terminals appearing in the rule body
+
+
+_RULE_DECL_RE = re.compile(r"^\s+!?([a-z][a-z0-9_]*)\s*:")
+# Continuation lines start with leading whitespace + "|" (alternative branch).
+# Anything else with whitespace + identifier-colon is a fresh rule declaration.
+_LITERAL_RE = re.compile(r'"([^"\\]+)"')
+
+
+def _parse_grammar_rules(text: str) -> list[GrammarRule]:
+    """Walk the grammar source and return every rule definition.
+
+    Each rule starts at the first match of ``^\\s+!?<name>\\s*:`` and runs
+    until the next rule declaration or a blank line. Continuation lines
+    (alternatives ``| …``) are absorbed into the same rule. Literals are
+    pulled out as a denormalised tuple per rule so the ranker can intersect
+    against an oracle-text vocabulary in O(1) per rule.
+    """
+    lines = text.splitlines()
+    rules: dict[str, GrammarRule] = {}
+    i = 0
+    while i < len(lines):
+        m = _RULE_DECL_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        name = m.group(1)
+        start = i
+        end = i
+        # Collect continuation lines.
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if _RULE_DECL_RE.match(nxt):
+                break
+            if not nxt.strip():
+                break
+            end = j
+        block = "\n".join(lines[start:end + 1])
+        literals = tuple(m.group(1).lower() for m in _LITERAL_RE.finditer(block))
+        # Re-declarations win on first-match for the index but we record the
+        # first occurrence's literals; later branches typically share the
+        # head literals so the ranker isn't sensitive to this.
+        rules.setdefault(
+            name,
+            GrammarRule(
+                name=name,
+                start_line=start + 1,
+                end_line=end + 1,
+                source=block,
+                literals=literals,
+            ),
+        )
+        i = end + 1
+    return list(rules.values())
+
+
+def grammar_rule_index() -> list[GrammarRule]:
+    """Parse ``grammar.py`` once and return every rule definition.
+
+    Output ordering follows file order so callers that need a deterministic
+    iteration sequence (the ranker) don't need a secondary sort. Cheap on
+    cold start (<100ms) since the grammar fits in memory and we just regex
+    the string.
+    """
+    return _parse_grammar_rules(GRAMMAR.read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
+class RankedRule:
+    """One scored candidate parent rule for the parse-error LLM step."""
+
+    rule: GrammarRule
+    score: int
+    overlap: tuple[str, ...]
+
+
+_WORD_RE = re.compile(r"[a-z][a-z']*")
+
+
+def _tokenize_oracle(text: str) -> set[str]:
+    """Lowercase-word set from the failing oracle/context text."""
+    return {w for w in _WORD_RE.findall(text.lower()) if len(w) > 1}
+
+
+def rank_candidate_parent_rules(
+    failing_text: str, rules: list[GrammarRule] | None = None, top_n: int = 3
+) -> list[RankedRule]:
+    """Score grammar rules by literal-token overlap with ``failing_text``.
+
+    Tokenizes the failing oracle / preprocessed context, intersects with each
+    rule's literal terminals, scores by the size of the intersection. Returns
+    the top ``top_n`` rules by score (ties broken by rule name for stability).
+    Rules with score 0 are excluded — they have no overlap and can't justify
+    a new alternative.
+    """
+    rules = rules if rules is not None else grammar_rule_index()
+    vocab = _tokenize_oracle(failing_text)
+    ranked: list[RankedRule] = []
+    for r in rules:
+        overlap = tuple(sorted(set(r.literals) & vocab))
+        if not overlap:
+            continue
+        ranked.append(RankedRule(rule=r, score=len(overlap), overlap=overlap))
+    ranked.sort(key=lambda x: (-x.score, x.rule.name))
+    return ranked[:top_n]
+
+
+def dump_rule_definitions(rules: Iterable[GrammarRule]) -> str:
+    """Format a sequence of rules as ``<line>: <source>`` blocks.
+
+    Mirrors the orchestrator's ``grammar_rule_block`` shape (1-based line
+    prefix per line) so the LLM sees the same anchor format as the freeform
+    prompt path. Multi-rule output is separated by blank lines.
+    """
+    parts: list[str] = []
+    for r in rules:
+        body_lines = r.source.splitlines()
+        numbered = "\n".join(
+            f"{r.start_line + i}: {line.rstrip()}" for i, line in enumerate(body_lines)
+        )
+        parts.append(numbered)
+    return "\n\n".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class ParseErrorContext:
+    """All deterministic inputs to the parse-error LLM calls."""
+
+    label: str
+    failing_text: str           # preprocessed text + raw oracle text concat
+    pe_block: str | None         # the orchestrator's pre-formatted summary
+    rules: list[GrammarRule]
+    candidates: list[RankedRule]
+    candidates_dump: str
+    project_dir: Path
+    card_name: str = ""
+    oracle_text: str = ""
+
+
+def gather_parse_error(
+    *,
+    label: str,
+    project_dir: Path,
+    oracle_text: str = "",
+    pe_block: str | None = None,
+    card_name: str = "",
+) -> ParseErrorContext:
+    """Run P0 + P1 + P2 and bundle the results.
+
+    The orchestrator already formats ``pe_block`` (the
+    ``ParseErrorDetails``-derived prompt body). We feed both the raw oracle
+    text and the pe_block into the tokenizer so the ranker matches against
+    everything Lark saw at the failure point, not just the card text.
+    """
+    rules = grammar_rule_index()
+    failing_text = " ".join(filter(None, [oracle_text, pe_block or ""]))
+    candidates = rank_candidate_parent_rules(failing_text, rules=rules, top_n=3)
+    dump = dump_rule_definitions(rc.rule for rc in candidates)
+    return ParseErrorContext(
+        label=label,
+        failing_text=failing_text,
+        pe_block=pe_block,
+        rules=rules,
+        candidates=candidates,
+        candidates_dump=dump,
+        project_dir=project_dir,
+        card_name=card_name,
+        oracle_text=oracle_text,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unmodeled-rule context (U0, U1, U2)
+# ---------------------------------------------------------------------------
+
+
+def grammar_rule_block(rule_name: str) -> GrammarRule | None:
+    """Locate one rule by name (U0)."""
+    for r in grammar_rule_index():
+        if r.name == rule_name:
+            return r
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class AstModuleSummary:
+    """One ``parser/ast/<module>.py`` slice: the class names it defines."""
+
+    module: str  # filename stem, e.g. "statements"
+    path: Path
+    class_names: tuple[str, ...]
+
+
+def list_ast_modules() -> list[AstModuleSummary]:
+    """U1 — libcst over ``parser/ast/*.py`` returning each module's class list.
+
+    The LLM needs to pick which file to add a new dataclass to; the per-module
+    class list is the smallest representation that still discloses the
+    semantic split (Ability subclasses in abilities.py, Statement subclasses
+    in statements.py, etc.).
+    """
+    out: list[AstModuleSummary] = []
+    for path in sorted(AST_DIR.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        try:
+            module = cst.parse_module(text)
+        except cst.ParserSyntaxError:
+            continue
+        names: list[str] = []
+        for stmt in module.body:
+            if isinstance(stmt, cst.ClassDef):
+                names.append(stmt.name.value)
+        out.append(
+            AstModuleSummary(
+                module=path.stem,
+                path=path,
+                class_names=tuple(names),
+            )
+        )
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class TransformerExemplar:
+    """One ``parser: handle <rule>`` commit summary surfaced as an exemplar."""
+
+    commit: str
+    rule_name: str
+    diff: str  # the per-file diff text (transformer + ast file slices)
+
+
+_COMMIT_SUBJECT_RE = re.compile(r"^parser: handle ([a-z][a-z0-9_]*)\b")
+
+
+def recent_transformer_exemplars(limit: int = 5) -> list[TransformerExemplar]:
+    """U2 — git log for recent ``parser: handle <rule>`` commits + diffs.
+
+    Each exemplar pairs (a) the AST dataclass that was added and (b) the
+    transformer method that returns it. The LLM uses these to mimic both
+    shape and style. We cap each diff at ~6 KB so the prompt stays bounded
+    even for verbose commits.
+    """
+    try:
+        log = subprocess.run(
+            [
+                "git", "log", "--all", "--pretty=%H%x09%s",
+                "--grep=^parser: handle ", "-n", str(limit * 4),
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return []
+    if log.returncode != 0:
+        return []
+    out: list[TransformerExemplar] = []
+    seen: set[str] = set()
+    for line in log.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        sha, subject = line.split("\t", 1)
+        m = _COMMIT_SUBJECT_RE.match(subject)
+        if not m:
+            continue
+        rule = m.group(1)
+        if rule in seen:
+            continue
+        seen.add(rule)
+        diff = subprocess.run(
+            [
+                "git", "show", sha,
+                "--",
+                "src/argentum_press/parser/transformer.py",
+                "src/argentum_press/parser/ast/",
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        if not diff.strip():
+            continue
+        # Trim each exemplar so a verbose dataclass doesn't blow the prompt.
+        out.append(
+            TransformerExemplar(
+                commit=sha[:12], rule_name=rule, diff=diff[:6000]
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class UnmodeledRuleContext:
+    """All deterministic inputs to the unmodeled-rule LLM calls."""
+
+    label: str
+    rule_name: str
+    rule: GrammarRule | None
+    ast_modules: list[AstModuleSummary]
+    exemplars: list[TransformerExemplar]
+    project_dir: Path
+    card_name: str = ""
+    oracle_text: str = ""
+
+
+def gather_unmodeled_rule(
+    *,
+    label: str,
+    project_dir: Path,
+    oracle_text: str = "",
+    card_name: str = "",
+) -> UnmodeledRuleContext:
+    """Run U0 + U1 + U2 and bundle the results."""
+    rule_name = label.split(":", 1)[-1] if ":" in label else label
+    rule = grammar_rule_block(rule_name)
+    return UnmodeledRuleContext(
+        label=label,
+        rule_name=rule_name,
+        rule=rule,
+        ast_modules=list_ast_modules(),
+        exemplars=recent_transformer_exemplars(),
+        project_dir=project_dir,
+        card_name=card_name,
+        oracle_text=oracle_text,
+    )
