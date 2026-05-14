@@ -1583,9 +1583,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--mode", choices=("freeform", "playbook"), default="freeform",
         help="freeform = freeform claude -p loop (default, unchanged). "
-             "playbook = structured DAG of LLM + libcst steps (lower-gaps only). "
-             "playbook mode aborts the iteration if the gap is parse-error or "
-             "unmodeled-rule, since those playbooks aren't built yet.",
+             "playbook = structured DAG of LLM + libcst steps for all three "
+             "gap kinds (parse-error / unmodeled-rule / lower); freeform is "
+             "the last-resort fallback for unknown kinds.",
     )
     args = ap.parse_args(argv)
 
