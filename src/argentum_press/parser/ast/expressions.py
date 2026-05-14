@@ -619,3 +619,11 @@ class RemainsExpression(Expression):
     subject: Expression | None = None
     modifier: Expression | None = None
     location: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiesExpression(EffectExpression):
+    """``<subject>? die(s) <timing>?`` — triggers on a creature dying (going to graveyard from the battlefield)."""
+
+    subject: Expression | None = None
+    timing: Expression | None = None
