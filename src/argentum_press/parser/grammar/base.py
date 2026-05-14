@@ -34,19 +34,6 @@ class BaseCompiler(metaclass=abc.ABCMeta):
                 """
                 return self._lexer
 
-        def hasParser(self):
-                """
-                Checks whether the Parser has been instantiated.
-                This is usually just a sanity check.
-                """
-                return self._parser is not None
-
-        def getParser(self):
-                """
-                Returns the Parser instance.
-                """
-                return self._parser
-
         def hasPreprocessor(self):
                 """
                 Checks whether the Preprocessor has been instantiated.

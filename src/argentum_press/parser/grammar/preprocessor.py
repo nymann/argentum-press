@@ -8,7 +8,7 @@ class MtgJsonPreprocessor(BasePreprocessor):
                 pass #TODO
                 
                 
-        def prelex(self,inputobj,flags,name):
+        def prelex(self,inputobj,name,flags):
                 if name is not None:
                     if "," in name:
                         splitName = name.split(",")

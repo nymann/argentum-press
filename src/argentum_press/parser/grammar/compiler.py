@@ -1,7 +1,6 @@
 # pyright: basic
 from argentum_press.parser.grammar.base import BaseCompiler
 from . import grammar #TODO: This will change.
-from . import grammarian
 from argentum_press.parser.grammar.preprocessor import MtgJsonPreprocessor
 from argentum_press.parser.grammar.postprocessor import MtgJsonPostprocessor
 import cProfile
@@ -12,38 +11,6 @@ import re
 class MtgJsonCompiler(BaseCompiler):
         def __init__(self,options={}):
                 super().__init__(options)
-
-                #TODO: This is just a temporary solution until we have a more elegant
-                #way of generating the grammar.
-                #g = grammar.getGrammar()
-
-                """
-                grammar = grammarian.requestGrammar(imports=
-                [
-                "base/common.grm",
-                "base/entities.grm",
-                "base/statements.grm",
-                "base/abilities.grm",
-                "base/manasymbolexpressions.grm",
-                "base/playerdeclrefs.grm",
-                "base/timeexpressions.grm",
-                "base/zones.grm",
-                "base/characteristics.grm",
-                "base/conditionalstmts.grm",
-                "base/effectstatements.grm",
-                "base/modifiers.grm",
-                "base/qualifiers.grm",
-                "base/typeexpressions.grm",
-                "base/colorexpressions.grm",
-                "base/declrefdecorators.grm",
-                "base/objectdeclrefs.grm",
-                "base/valueexpressions.grm"
-                ]
-                ,options=options)
-                """
-
-                #larkfrontend = Lark(g,start='cardtext',parser='earley',lexer='standard',debug=True)
-                #print(larkfrontend.lexer_conf.tokens)
 
                 if "parser.startRule" in options:
                     startRule = options["parser.startRule"]
