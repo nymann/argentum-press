@@ -665,7 +665,7 @@ def getGrammar():
         discardexpression: playerdeclref? ("discard"["s"] | "discarded") (declarationorreference | "a" "card" | valueexpression "card"["s"] | "card"["s"] valueexpression) "at random"?
         doubleexpression: "double" //[TODO]
         exchangeexpression: "exchange" characteristicexpression //[TODO]
-        exileexpression: "exile" declarationorreference
+        exileexpression: "exile" (declarationorreference | cardexpression)
         fightexpression: declarationorreference? "fight"["s"] declarationorreference?
         playexpression: playerdeclref? ("play"["s"] | "played") declarationorreference timeexpression?
         revealexpression: playerdeclref? ("reveal"["s"] | "revealed") (cardexpression | declarationorreference)
