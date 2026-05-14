@@ -1276,7 +1276,14 @@ def _restore_worktree(head: str) -> None:
     ``clean -fd``). We don't touch the parse cache or anything outside the
     repo. The user accepted this explicitly: replay is destructive on
     purpose, and only runs on the dedicated experiment branch.
+
+    Honors ``ARGENTUM_FIX_LOOP_NO_RESTORE=1`` as a kill-switch for tests:
+    the integration test invokes a real subprocess where monkeypatching
+    can't reach, and we explicitly don't want it nuking work-in-progress
+    code on a dev checkout.
     """
+    if os.environ.get("ARGENTUM_FIX_LOOP_NO_RESTORE") == "1":
+        return
     git("reset", "--hard", head, check=False)
     git("clean", "-fd", check=False)
 
@@ -1289,6 +1296,7 @@ def _run_replay(
     prompt_variant: str,
     dry_run: bool,
     claude_cmd: list[str] | None,
+    skip_pytest: bool = False,
 ) -> int:
     """Run one fix-loop iteration against a saved gap and restore worktree.
 
@@ -1374,17 +1382,22 @@ def _run_replay(
             recorder.finish_iteration(rec)
             return rc
 
-        stamp(f"{DIM}running pytest...{RESET}")
-        pytest_rc, output = run_pytest()
-        if pytest_rc != 0:
-            stamp(f"{RED}pytest red after replay edit; recording abort_pytest.{RESET}")
-            print(output[-2000:], file=sys.stderr)
-            rec.outcome = "abort_pytest"
+        if skip_pytest:
+            stamp(f"{DIM}skipping pytest (--skip-pytest).{RESET}")
+            rec.outcome = "pass"
             recorder.finish_iteration(rec)
-            return 0  # replay aborted-pytest is informational, not fatal
-        stamp(f"{GREEN}pytest green.{RESET}")
-        rec.outcome = "pass"
-        recorder.finish_iteration(rec)
+        else:
+            stamp(f"{DIM}running pytest...{RESET}")
+            pytest_rc, output = run_pytest()
+            if pytest_rc != 0:
+                stamp(f"{RED}pytest red after replay edit; recording abort_pytest.{RESET}")
+                print(output[-2000:], file=sys.stderr)
+                rec.outcome = "abort_pytest"
+                recorder.finish_iteration(rec)
+                return 0  # replay aborted-pytest is informational, not fatal
+            stamp(f"{GREEN}pytest green.{RESET}")
+            rec.outcome = "pass"
+            recorder.finish_iteration(rec)
     finally:
         # Restore the worktree no matter what; replay is supposed to be
         # idempotent. Important: do this AFTER finish_iteration so the
@@ -1433,6 +1446,12 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON-encoded list of argv strings overriding the default ``claude -p`` "
              "invocation. Tests use this to point at a fake-claude shim.",
     )
+    ap.add_argument(
+        "--skip-pytest", action="store_true",
+        help="Skip the post-agent pytest gate. Replay mode + experiment runner "
+             "use this to keep wall-clock noise down when the agent is a no-op "
+             "shim; production runs leave it off.",
+    )
     args = ap.parse_args(argv)
 
     if args.capture_gap is not None:
@@ -1471,6 +1490,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt_variant=args.prompt_variant,
             dry_run=args.dry_run,
             claude_cmd=claude_cmd,
+            skip_pytest=args.skip_pytest,
         )
 
     if not args.set_code:
