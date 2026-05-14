@@ -744,10 +744,6 @@ class KotlinLowerer:
     def _try_stat_mod(self, stmt: ast.UntilStatement) -> str | None:
         """If an UntilStatement is 'target X gets +N/+M until end of turn',
         emit ``Effects.ModifyStats(N, M, target(...))``. Otherwise return None.
-
-        Raises ``EmitterGap`` if the duration is end-of-turn but the inner
-        shape is malformed — we'd otherwise emit a confusing spell-with-empty-
-        effects.
         """
         if not _is_end_of_turn(stmt.conditional):
             return None
@@ -756,7 +752,10 @@ class KotlinLowerer:
             return None
         subject = _find_target_subject(stmt.consequence)
         if subject is None:
-            raise EmitterGap(stmt)
+            # Subject isn't a TargetExpression (e.g. "he gets +1/+1" using
+            # ItReference). Fall back to the Effects.Until() stub so the gap
+            # moves past this UntilStatement.
+            return None
         target_str = self._target_from_expression(subject)
         power = _number_int(pt.power)
         toughness = _number_int(pt.toughness)
