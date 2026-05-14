@@ -69,6 +69,7 @@ _TRIGGER_KOTLIN: dict[str, str] = {
     "cast": "YouCastSpell",
     "deals damage": "DealsDamage",
     "dies": "Dies",
+    "draw": "YouDraw",
     "enters": "EntersBattlefield",
     "leaves": "LeavesBattlefield",
     "upkeep": "BeginningOfUpkeep",
@@ -96,6 +97,12 @@ def _find_trigger_marker(node: Any) -> str:
         # caster as a surface descriptor only; map to the engine's generic
         # YouCastSpell trigger so the gap moves past CastExpression.
         return "cast"
+    if isinstance(node, ast.CardDrawExpression):
+        # "<subject> draw(s) <quantity> card(s)" as a trigger condition
+        # (e.g. "whenever you draw your first or second card each turn").
+        # The rich AST carries only the quantity; map to the engine's
+        # YouDraw trigger so the gap moves past CardDrawExpression.
+        return "draw"
     if isinstance(node, ast.DealsDamageExpression):
         # "<origin> deals <damage_type> damage to <subject>" as a trigger
         # condition (e.g. "whenever a creature deals combat damage to a
