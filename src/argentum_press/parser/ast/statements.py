@@ -256,3 +256,10 @@ class QuotedAbilityStatement(Statement):
     """A statement block in double quotes (granted abilities, emblems)."""
 
     block: StatementBlock
+
+
+@dataclass(frozen=True, slots=True)
+class ManaSpendableStatement(Statement):
+    """Marker for ``mana of any type can be spent to cast spells this way`` clause."""
+
+    pass
