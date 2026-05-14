@@ -104,6 +104,7 @@ from argentum_press.parser.ast import (
     FlashbackAbility,
     FortifyAbility,
     FrenzyAbility,
+    GainLoseExpression,
     GenericDeclarationExpression,
     GraftAbility,
     HexproofAbility,
@@ -1498,6 +1499,13 @@ class CardTransformer(Transformer):
         # playerdeclref? ("look"["s"]|"looked") "at"
         #   (declarationorreference | cardexpression | zonedeclarationexpression)
         return LookExpression()
+
+    def gainlifeexpression(self, items):
+        # playerdeclref? "gain"["s"] (valueexpression? "life" | "life" valueexpression)
+        # | playerdeclref "gained" (valueexpression? "life" | "life" valueexpression) timeexpression?
+        # Surface-only stub matching Reed's GainLoseExpression shape; amount
+        # and player are dropped until a card needs them.
+        return GainLoseExpression(subject=None)
 
     def chooseexpression(self, items):
         # playerdeclref? ("choose"["s"]|"chose") declarationorreference
