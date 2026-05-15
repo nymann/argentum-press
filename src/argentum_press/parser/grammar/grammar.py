@@ -45,6 +45,7 @@ def getGrammar():
         manaspendablestatement: "mana" "of" "any" "type" "can" "be" "spent" "to" "cast" "spells" "this" "way"
         | "you" "do" "not" "lose" "unspent" "red" "mana" "as" "steps" "and" "phases" "end" -> manaretentionstatement
         | "at" "the" "beginning" "of" "your" "first" "main" "phase" "," "discard" "a" "card" -> firstmainphasediscardstatement
+        | "do" "this" "only" "once" "each" "turn" -> doonlyonceeachturnstatement
         triggerrestrictionstatement: declarationorreference? "trigger"["s"] "only" valuefrequency timeexpression?
 
         thenstatement: "then" statement
