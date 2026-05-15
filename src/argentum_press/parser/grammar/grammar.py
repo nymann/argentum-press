@@ -571,6 +571,7 @@ def getGrammar():
         | "prevent" valueexpression "of" "that" DAMAGETYPE -> preventdamagevariantd 
         | "prevent" "that" DAMAGETYPE -> preventdamagevariante
         | DAMAGETYPE "is" "prevented" "this" "way" -> preventdamagevariantf //[TODO: There may be a more general is-statement for stuff like 'damage'.]
+        | DAMAGETYPE "can" "not" "be" "prevented" -> preventdamagevariantg
 
         returnexpression: playerdeclref? "return"["s"] declarationorreference atrandomexpression? ("from" zonedeclarationexpression)? "to" zonedeclarationexpression genericdeclarationexpression? zoneplacementmodifier?//[TODO]
 
