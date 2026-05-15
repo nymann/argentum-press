@@ -1055,6 +1055,8 @@ class KotlinLowerer:
             return 'Effects.ManaRetention()'
         if isinstance(stmt, ast.ForStatementNoStatement):
             return 'Effects.ForEachDeclaration()'
+        if isinstance(stmt, ast.FirstMainPhaseDiscardStatement):
+            return 'Effects.firstMainPhaseDiscard()'
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
