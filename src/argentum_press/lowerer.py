@@ -1350,3 +1350,6 @@ class KotlinLowerer:
     @ability.register  # ast=ast.RiotAbility
     def _lower_riot_ability(self, ability: ast.RiotAbility) -> str:
         return "Effects.Riot()"
+    @effect.register  # ast=ast.PreventDamageVariantG
+    def _(self, effect: ast.PreventDamageVariantG) -> str:
+        return 'Effects.preventDamageVariantG()'
