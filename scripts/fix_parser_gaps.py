@@ -201,6 +201,9 @@ def _post_commit_classify_subprocess(
         return {"result": "subprocess-error", "reason": str(exc)}
 
 
+_HASH_LOCATOR_RE = re.compile(r"@t[0-9a-f]{8}")
+
+
 def _gap_still_present(gap: Any) -> bool:
     """True if the originating gap's (kind, label) reappears on a fresh classify.
 
@@ -210,6 +213,14 @@ def _gap_still_present(gap: Any) -> bool:
     we'd hit no_progress and bail. This catches it one step earlier
     so we can revert the bogus commit instead of leaving it in
     history.
+
+    Hash-based EOF locators (``@t<hex>``) are exempt: their hash is
+    derived from the whole-card preprocessed text, so it can't change
+    even when a partial fix actually moved the failure to a different
+    sentence. Equating "same label" with "no progress" then triggers a
+    false-positive revert on every multi-issue card. For these we let
+    the commit land and rely on the no-progress check (which now
+    factors in tree state) to catch genuine stagnation.
     """
     out = _post_commit_classify_subprocess(
         card_name=gap.card_name, oracle_text=gap.oracle_text,
@@ -220,6 +231,8 @@ def _gap_still_present(gap: Any) -> bool:
     if gap.kind == "lower":
         return out.get("result") == "bucket2" and out.get("missing_node") == gap.label
     if gap.kind == "parse":
+        if _HASH_LOCATOR_RE.search(gap.label):
+            return False
         return out.get("result") == "parse-error" and out.get("label") == gap.label
     # Unknown kind — don't second-guess.
     return False
@@ -2140,14 +2153,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         strategy = freeform
 
-    # (label, card_name) tuple — lower gaps have the same `label` (an AST
-    # class name) for many cards, so just matching on `label` fires as a
-    # false positive when the LLM's previous fix handled one card's variant
-    # of a class but a later card hits a different variant of the same
-    # class. Pairing with card_name distinguishes "fix didn't work on this
-    # exact card" (real no-progress) from "fix worked here, a different
-    # card surfaces the same class with a different shape" (progress).
-    prev_signature: tuple[str, str] = ("", "")
+    # (label, card_name, tree_hash) — label+card_name distinguishes "fix
+    # didn't work on this exact card" (real no-progress) from "fix worked
+    # here, a different card surfaces the same class with a different
+    # shape" (progress). Tree hash covers the multi-issue-card case where
+    # a hash-based EOF label can't change even after a real partial fix
+    # lands: when the previous iteration kept a substantive commit, the
+    # tree hash differs and we don't false-positive abort.
+    prev_signature: tuple[str, str, str] = ("", "", "")
     i = 0
     while True:
         i += 1
@@ -2176,10 +2189,14 @@ def main(argv: list[str] | None = None) -> int:
         if gap is None:
             stamp(f"{GREEN}no gaps remaining. done.{RESET}")
             return 0
-        signature = (gap.label, gap.card_name)
+        tree_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=REPO, capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        signature = (gap.label, gap.card_name, tree_hash)
         if signature == prev_signature:
             stamp(
-                f"{RED}no progress: same (label, card) twice in a row "
+                f"{RED}no progress: same (label, card, tree) twice in a row "
                 f"({gap.card_name}, {gap.label}). abort.{RESET}"
             )
             if recorder and rec:

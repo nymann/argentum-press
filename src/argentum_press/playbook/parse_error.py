@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,9 @@ def _resolve_models(override: str | None) -> tuple[str, str, str]:
     return P3_MODEL, P4_MODEL, P8_MODEL
 
 
+_HASH_LOCATOR_RE = re.compile(r"@t[0-9a-f]{8}")
+
+
 def _live_card_still_failing(
     *, card_name: str, oracle_text: str, label: str
 ) -> bool:
@@ -55,11 +59,19 @@ def _live_card_still_failing(
     the re-parse picks up the freshly-written grammar instead of the
     pre-edit version loaded into memory.
 
+    Hash-based EOF locators (``@t<hex>``) are exempt: their hash is
+    derived from the whole-card preprocessed text and so cannot change
+    when a partial fix moves the failure to a different sentence. For
+    those we trust the strategy and let the orchestrator's no-progress
+    check (which now factors in tree state) catch genuine stagnation.
+
     Returns False when card_name or oracle_text is empty (e.g. replay/CLI
     invocations without card data) — the gate degrades to a no-op rather
     than blocking those paths.
     """
     if not card_name or not oracle_text:
+        return False
+    if _HASH_LOCATOR_RE.search(label):
         return False
     from argentum_press.parser import parse as _parse
     from argentum_press.parser import transformer as _transformer_mod
