@@ -744,3 +744,11 @@ class PreventDamageVariantG(Expression):
     """`<damagetype> can not be prevented` — states that a specific type of damage is unprevented able."""
 
     damage_type: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChooseNewTargetsForCopyExpression(Expression):
+    """`<player> choose[s] new targets for the copy` — selects replacement targets for a copied spell or ability."""
+
+    player: Expression | None = None
+    targets: Expression | None = None
