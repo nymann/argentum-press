@@ -340,3 +340,11 @@ class DuringStatementLeading(Statement):
 
     time: Expression | None = None
     body: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CantStatement(Statement):
+    """`<subject> can not <statement>` — negated capability statement expressing a permanent prohibition on an action."""
+
+    subject: Expression | None = None
+    body: Statement | None = None
