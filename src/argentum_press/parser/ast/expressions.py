@@ -727,3 +727,13 @@ class RiotAbility(Expression):
     """`riot` — keyword ability that lets the permanent enter with a +1/+1 counter or haste."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class BeExpression(Expression):
+    """`be/been <modifier> <value>? by <agent>? <time>?` — passive-voice predicate expression describing a state or condition applied to a subject."""
+
+    modifier: Expression | None = None
+    value: Expression | None = None
+    agent: Expression | None = None
+    time: Expression | None = None
