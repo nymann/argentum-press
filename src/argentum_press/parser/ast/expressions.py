@@ -752,3 +752,11 @@ class ChooseNewTargetsForCopyExpression(Expression):
 
     player: Expression | None = None
     targets: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AttacksWithExpression(Expression):
+    """`<declarationorreference> attacks with <declarationorreference>` — constrains attacking to occur alongside a specific permanent."""
+
+    attacker: Expression | None = None
+    companion: Expression | None = None
