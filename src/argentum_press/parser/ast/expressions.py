@@ -720,3 +720,10 @@ class OtherThanExpression(Expression):
     """`other than <reference>` — excludes a specific declaration or reference from a set or effect."""
 
     reference: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RiotAbility(Expression):
+    """`riot` — keyword ability that lets the permanent enter with a +1/+1 counter or haste."""
+
+    pass
