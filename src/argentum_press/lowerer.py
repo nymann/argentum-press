@@ -170,6 +170,13 @@ def _trigger_kotlin_name(condition: Any) -> str:
         # member. Emit a stub trigger name so the gap moves past
         # DoStatement to whatever the next unhandled node is.
         return "WhenYouDo"
+    if isinstance(condition, ast.CompoundStatement):
+        # "Whenever you <X> and <Y>" — compound trigger condition listing
+        # multiple sub-events (e.g. "play a land or cast a spell from
+        # anywhere other than your hand"). argentum-engine has no DSL
+        # surface for multi-event triggers; emit a stub so the gap moves
+        # past CompoundStatement to whatever the sub-statements surface next.
+        return "Compound"
     raise EmitterGap(condition)
 
 
