@@ -992,6 +992,14 @@ class KotlinLowerer:
             # has no top-level grant-ability Effect surface yet; emit a stub
             # so the gap moves past BeingStatement.
             return ("Effects.Being()",)
+        if isinstance(stmt, ast.CantStatement):
+            # "<subject> can't <body>" — permanent prohibition (e.g. "spells
+            # and abilities can't be countered", "damage can't be prevented").
+            # argentum-engine's "can't" surfaces are narrow (CantAttack,
+            # CantBlock, GrantCantBeCountered with filter) and don't cover
+            # the global game-rule form. Emit a stub so the gap moves past
+            # CantStatement to whatever the subject/body surface next.
+            return ("Effects.Cant()",)
         if isinstance(stmt, ast.ForStatement):
             # "for each <X>, <Y>" — count-scaled effect (e.g. "+2/+2 for each
             # Aura and Equipment attached to it"). The rich AST carries the
