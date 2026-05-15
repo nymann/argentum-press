@@ -781,7 +781,7 @@ def getGrammar():
         timemodifier: "next" valuecardinal? -> nexttimemodifier
         | "additional" -> additionaltimemodifier
         | valuecardinal? "extra" -> extratimemodifier
-        PHASE: "beginning phase" | ("precombat" | "postcombat" | "first" | "second")? "main phase" | ("combat" | "combat phase") | "ending phase"
+        PHASE: "beginning phase" | ("precombat" | "postcombat")? "main phase" | ("combat" | "combat phase") | "ending phase"
         STEP: "untap step" | ("upkeep step" | "upkeep") | "draw step" | "beginning of combat" | "declare attackers step"
         | "declare blockers step" | "combat damage step" | "end of combat" | "end step" | "cleanup step" | "step"
         TURN: "turn"
