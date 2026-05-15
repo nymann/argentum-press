@@ -662,6 +662,7 @@ def getGrammar():
         | "by" "discarding" cardexpression "in" "addition" "to" "paying" possessiveterm? "other" "cost"["s"] -> castbyalternatecost
         | "this" "way" -> castthisway
         chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
+        | playerdeclref? ("choose"["s"]|"chose") "new" "targets" "for" declarationorreference -> choosenewtargetsexpression
         controlsexpression: playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
         gaincontrolexpression: playerdeclref? ("gain"["s"] | "gained") "control" "of" declarationorreference
 
