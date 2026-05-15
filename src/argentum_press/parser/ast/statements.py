@@ -318,3 +318,10 @@ class DoStatement(Statement):
 
     subject: Expression | None = None
     body: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ForStatementNoStatement(Statement):
+    """`for each <declaration>` — iterates over a generic declaration without an associated effect body."""
+
+    declaration: Expression | None = None
