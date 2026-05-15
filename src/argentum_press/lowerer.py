@@ -1280,3 +1280,12 @@ class KotlinLowerer:
     @effect.register  # ast=ast.SuspectExpression
     def _(self, effect: ast.SuspectExpression) -> str:
         return 'Effects.Suspect()'
+    @effect.register  # ast=ast.Name
+    def _(self, expr: ast.Name) -> str:
+        # A bare Name appearing as the root of an ExpressionStatement (e.g.
+        # "attacks" as the consequence of an IfStatement on Maximum Carnage's
+        # Saga ability). The rich AST drops verb-as-effect details onto a bare
+        # Name string with no subject/target wiring, and argentum-engine has
+        # no top-level Name Effect surface; emit a stub so the gap moves past
+        # Name to whatever the next unhandled node is.
+        return "Effects.Name()"
