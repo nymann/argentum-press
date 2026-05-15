@@ -1268,6 +1268,13 @@ class KotlinLowerer:
             # emit a stub Targets.Self so the gap moves past
             # DescriptionExpression to whatever the next unhandled node is.
             return "Targets.Self"
+        if isinstance(node, ast.EachExpression):
+            # "each <X>" — the rich AST wraps the iterated subject as the
+            # operand (e.g. "each opponent" -> DescriptionExpression with a
+            # NameReference). argentum-engine has no top-level "each"
+            # target qualifier; recurse on the operand so the gap moves
+            # past EachExpression to whatever the next unhandled node is.
+            return self._target_from_expression(node.operand)
         raise EmitterGap(node)
     @effect.register  # ast=ast.PutInZoneExpression
     def _(self, expr: ast.PutInZoneExpression) -> str:
