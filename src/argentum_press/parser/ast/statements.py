@@ -325,3 +325,10 @@ class ForStatementNoStatement(Statement):
     """`for each <declaration>` — iterates over a generic declaration without an associated effect body."""
 
     declaration: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FirstMainPhaseDiscardStatement(Statement):
+    """`at the beginning of your first main phase, discard a card` — fixed trigger effect with no variable components."""
+
+    pass
