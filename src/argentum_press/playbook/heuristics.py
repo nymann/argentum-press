@@ -39,9 +39,11 @@ def pick_pattern(classname: str, exemplars: LowererExemplars) -> PatternChoice:
     1. If ``classname`` already appears as ``ast.X`` in any captured
        isinstance branch → isinstance-branch (high confidence; clearly the
        sibling pattern).
-    2. If ``classname`` ends in ``Statement`` AND there is at least one
+    2. If ``classname`` contains ``Statement`` AND there is at least one
        isinstance branch inside ``_effects_from_statement`` → isinstance-branch
-       (medium-high confidence; the helper exists and the suffix matches).
+       (medium-high confidence; the helper exists and the name matches).
+       Substring (not suffix) so ``DuringStatementLeading`` /
+       ``…StatementTrailing`` variants route correctly.
     3. If ``classname`` ends in ``Ability`` or ``Expression`` → register-handler
        (high confidence; that's the established split).
     4. Otherwise default to register-handler at low confidence — the playbook
@@ -59,12 +61,12 @@ def pick_pattern(classname: str, exemplars: LowererExemplars) -> PatternChoice:
         b.function in _STATEMENT_HELPER_FNS for b in exemplars.isinstance_branches
     )
 
-    if classname.endswith("Statement") and has_effects_helper:
+    if "Statement" in classname and has_effects_helper:
         return PatternChoice(
             pattern="isinstance-branch",
             confidence=0.85,
             rationale=(
-                f"{classname} ends in Statement and "
+                f"{classname} contains 'Statement' and "
                 f"_effects_from_statement has existing isinstance branches"
             ),
         )
