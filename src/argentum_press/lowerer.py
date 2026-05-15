@@ -1093,6 +1093,8 @@ class KotlinLowerer:
             return ("Effects.During()",)
         if isinstance(stmt, ast.LegendRuleStatement):
             return 'Effects.ignoreLegendRule()'
+        if isinstance(stmt, ast.DoOnlyOnceEachTurnStatement):
+            return "Effects.doOnlyOnceEachTurn()"
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
