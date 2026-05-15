@@ -1281,6 +1281,13 @@ class KotlinLowerer:
         # argentum-engine has no PutInZone DSL surface yet; emit a stub so
         # the lowerer moves past this AST class to the next gap.
         return "Effects.PutInZone()"
+    @effect.register  # ast=ast.SearchLibraryExpression
+    def _(self, expr: ast.SearchLibraryExpression) -> str:
+        # argentum-engine has no top-level "search library" DSL surface yet
+        # (SearchLibraryDecision exists on the engine side but isn't exposed
+        # as a card-DSL Effect); emit a stub so the gap moves past
+        # SearchLibraryExpression to whatever the next unhandled node is.
+        return "Effects.SearchLibrary()"
     @effect.register  # ast=ast.AddManaExpression
     def _(self, expr: ast.AddManaExpression) -> str:
         return 'AddManaEffect()'
