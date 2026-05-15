@@ -37,6 +37,9 @@ def getGrammar():
         | activationrestrictionstatement
         | triggerrestrictionstatement
         | manaspendablestatement
+        | legendrulestatement
+
+        legendrulestatement: "the" "\\"" "legend" "rule" "\\"" ("does" "not" | "do" "not") "apply" "to" declarationorreference
 
         activationrestrictionstatement: "activate" "only" "as" "a" "sorcery"
         manaspendablestatement: "mana" "of" "any" "type" "can" "be" "spent" "to" "cast" "spells" "this" "way"
