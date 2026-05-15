@@ -348,3 +348,10 @@ class CantStatement(Statement):
 
     subject: Expression | None = None
     body: Statement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LegendRuleStatement(Statement):
+    """`the 'legend rule' does not apply to <declarationorreference>` — exempts a permanent from the legend rule uniqueness constraint."""
+
+    target: Expression | None = None
