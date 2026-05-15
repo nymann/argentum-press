@@ -355,3 +355,10 @@ class LegendRuleStatement(Statement):
     """`the 'legend rule' does not apply to <declarationorreference>` — exempts a permanent from the legend rule uniqueness constraint."""
 
     target: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DoOnlyOnceEachTurnStatement(Statement):
+    """`do this only once each turn` — restricts the enclosing effect to a single activation or trigger per turn."""
+
+    pass

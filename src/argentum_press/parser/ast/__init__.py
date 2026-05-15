@@ -165,7 +165,7 @@ from argentum_press.parser.ast.references import (
     ZoneEnum,
 )
 from argentum_press.parser.ast.statements import (
-    AbilitySequenceStatement, ActivationRestrictionStatement, ActivationStatement, AsLongAsStatement, AsStatement, AtStatement, BeingStatement, CantStatement, CompoundStatement, CompoundTerminator, ConditionalStatement, CostIncreaseStatement, CostReductionStatement, DoStatement, DontStatement, DuringStatement, DuringStatementLeading, ExceptStatement, ExpressionStatement, FirstMainPhaseDiscardStatement, ForStatement, ForStatementNoStatement, IfStatement, IsStatement, KeywordAbilityListStatement, LegendRuleStatement, ManaRetentionStatement, ManaSpendableStatement, MayStatement, OtherwiseStatement, QuotedAbilityStatement, RatherStatement, Statement, StatementBlock, ThenStatement, ThereExistsStatement, TriggerRestrictionStatement, UnlessStatement, UntilStatement, WhenStatement, WheneverStatement, WhereStatement, WhileStatement)
+    AbilitySequenceStatement, ActivationRestrictionStatement, ActivationStatement, AsLongAsStatement, AsStatement, AtStatement, BeingStatement, CantStatement, CompoundStatement, CompoundTerminator, ConditionalStatement, CostIncreaseStatement, CostReductionStatement, DoOnlyOnceEachTurnStatement, DoStatement, DontStatement, DuringStatement, DuringStatementLeading, ExceptStatement, ExpressionStatement, FirstMainPhaseDiscardStatement, ForStatement, ForStatementNoStatement, IfStatement, IsStatement, KeywordAbilityListStatement, LegendRuleStatement, ManaRetentionStatement, ManaSpendableStatement, MayStatement, OtherwiseStatement, QuotedAbilityStatement, RatherStatement, Statement, StatementBlock, ThenStatement, ThereExistsStatement, TriggerRestrictionStatement, UnlessStatement, UntilStatement, WhenStatement, WheneverStatement, WhereStatement, WhileStatement)
 
 __all__ = [
     "Ability",
@@ -248,6 +248,7 @@ __all__ = [
     "DevourAbility",
     "DiesExpression",
     "DiscardExpression",
+    "DoOnlyOnceEachTurnStatement",
     "DoStatement",
     "DontStatement",
     "DredgeAbility",
@@ -445,6 +446,7 @@ __all__ = [
     "WithExpression",
     "Zone",
     "ZoneEnum",
+    
     
     
     
