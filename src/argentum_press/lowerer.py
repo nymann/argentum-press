@@ -1064,6 +1064,15 @@ class KotlinLowerer:
             return 'Effects.ForEachDeclaration()'
         if isinstance(stmt, ast.FirstMainPhaseDiscardStatement):
             return 'Effects.firstMainPhaseDiscard()'
+        if isinstance(stmt, ast.DuringStatementLeading):
+            # "during <time>, <statement>" — leading-form temporal constraint
+            # where the time expression precedes the body (e.g. "during your
+            # turn, ~ has first strike"). The rich AST carries both `time` and
+            # `body` as Optional surface nodes; argentum-engine has no
+            # top-level during-time Effect surface yet. Emit a stub so the gap
+            # moves past DuringStatementLeading to whatever the next unhandled
+            # node is.
+            return ("Effects.During()",)
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
