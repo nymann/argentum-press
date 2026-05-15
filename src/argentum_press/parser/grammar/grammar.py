@@ -12,7 +12,7 @@ def getGrammar():
 
         ability : abilityword? statementblock remindertext? -> regularability
         | keywordlist remindertext?
-        abilityword: (WORD | INFINITY)+ "—"
+        abilityword: (WORD | INFINITY | MINUS)+ "—"
         INFINITY: "∞"
 
         keywordlist: keywordsequence
