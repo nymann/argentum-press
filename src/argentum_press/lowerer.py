@@ -1053,6 +1053,8 @@ class KotlinLowerer:
             return ["Effects.Unless()"]
         if isinstance(stmt, ast.ManaRetentionStatement):
             return 'Effects.ManaRetention()'
+        if isinstance(stmt, ast.ForStatementNoStatement):
+            return 'Effects.ForEachDeclaration()'
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
