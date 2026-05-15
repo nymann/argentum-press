@@ -177,6 +177,16 @@ def _trigger_kotlin_name(condition: Any) -> str:
         # surface for multi-event triggers; emit a stub so the gap moves
         # past CompoundStatement to whatever the sub-statements surface next.
         return "Compound"
+    if isinstance(condition, ast.BeingStatement):
+        # "Whenever ~ becomes tapped" / "Whenever ~ is/has <X>" as a
+        # trigger condition — a state/being predicate on the LHS. The rich
+        # AST carries the LHS (often a self NameReference) and an RHS
+        # DescriptionExpression of the new state; argentum-engine's
+        # Becomes* triggers (BecomesTapped, BecomesBlocked, ...) are a
+        # narrow per-state surface, so emit a stub trigger name to move
+        # the gap past BeingStatement to whatever the sub-expressions
+        # surface next.
+        return "Becomes"
     raise EmitterGap(condition)
 
 
