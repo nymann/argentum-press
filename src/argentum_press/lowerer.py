@@ -1303,3 +1303,6 @@ class KotlinLowerer:
         # no top-level Name Effect surface; emit a stub so the gap moves past
         # Name to whatever the next unhandled node is.
         return "Effects.Name()"
+    @effect.register  # ast=ast.ShuffleLibraryExpression
+    def _lower_shuffle_library(self, expr: ast.ShuffleLibraryExpression) -> str:
+        return "ShuffleLibraryEffect()"
