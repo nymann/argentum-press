@@ -663,6 +663,7 @@ def getGrammar():
         | "this" "way" -> castthisway
         chooseexpression: playerdeclref? ("choose"["s"]|"chose") declarationorreference ("other" "than" declarationorreference)? ("from" "it")? atrandomexpression? //[TODO]
         | playerdeclref? ("choose"["s"]|"chose") "new" declarationorreference ("for" declarationorreference)? -> choosenewtargetsexpression
+        | playerdeclref? ("choose"["s"]|"chose") "new" declarationorreference "for" "the" "copy" -> choosenewtargetsforcopyexpression
         controlsexpression: playerdeclref? ("control"["s"] | "controlled") genericdeclarationexpression
         gaincontrolexpression: playerdeclref? ("gain"["s"] | "gained") "control" "of" declarationorreference
 
