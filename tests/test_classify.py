@@ -73,11 +73,11 @@ def test_activated_ability_is_bucket_2_with_node_type() -> None:
 
 
 def test_unknown_effect_is_bucket_2() -> None:
-    # A rich expression with no registered effect handler (Sacrifice has
+    # A rich expression with no registered effect handler (TapUntap has
     # no @effect.register entry today) drives a Bucket2 result.
     card = ast.Card(
-        abilities=(_spell(ast.SacrificeExpression(subject=ast.NameReference())),),
+        abilities=(_spell(ast.TapUntapExpression(subject=ast.NameReference())),),
     )
     result = classify(card, KotlinLowerer())
     assert isinstance(result, Bucket2)
-    assert "SacrificeExpression" in result.missing_node
+    assert "TapUntapExpression" in result.missing_node

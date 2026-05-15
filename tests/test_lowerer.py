@@ -199,10 +199,10 @@ def test_activated_ability_is_not_yet_supported() -> None:
 
 def test_emitter_gap_carries_qualified_node_type() -> None:
     # A rich expression with no registered effect handler.
-    expr = ast.SacrificeExpression(subject=ast.NameReference())
+    expr = ast.TapUntapExpression(subject=ast.NameReference())
     with pytest.raises(EmitterGap) as info:
         KotlinLowerer().effect(expr)
-    assert "SacrificeExpression" in info.value.node_type
+    assert "TapUntapExpression" in info.value.node_type
 
 
 def test_emitter_gap_uses_qualified_class_name() -> None:

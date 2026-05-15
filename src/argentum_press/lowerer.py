@@ -1308,3 +1308,6 @@ class KotlinLowerer:
     @effect.register  # ast=ast.ShuffleLibraryExpression
     def _lower_shuffle_library(self, expr: ast.ShuffleLibraryExpression) -> str:
         return "ShuffleLibraryEffect()"
+    @effect.register  # ast=ast.SacrificeExpression
+    def _lower_sacrifice(self, expr: ast.SacrificeExpression) -> str:
+        return "Effects.Sacrifice()"
