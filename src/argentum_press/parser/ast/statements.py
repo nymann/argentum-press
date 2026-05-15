@@ -332,3 +332,11 @@ class FirstMainPhaseDiscardStatement(Statement):
     """`at the beginning of your first main phase, discard a card` — fixed trigger effect with no variable components."""
 
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class DuringStatementLeading(Statement):
+    """`during <timeexpression>, <statement>` — time-leading form where the temporal constraint precedes the effect."""
+
+    time: Expression | None = None
+    body: Statement | None = None
