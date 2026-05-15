@@ -1091,6 +1091,8 @@ class KotlinLowerer:
             # moves past DuringStatementLeading to whatever the next unhandled
             # node is.
             return ("Effects.During()",)
+        if isinstance(stmt, ast.LegendRuleStatement):
+            return 'Effects.ignoreLegendRule()'
         raise EmitterGap(stmt)
 
     # ---- effects (expression-level dispatch) ------------------------------
