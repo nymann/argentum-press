@@ -737,3 +737,10 @@ class BeExpression(Expression):
     value: Expression | None = None
     agent: Expression | None = None
     time: Expression | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreventDamageVariantG(Expression):
+    """`<damagetype> can not be prevented` — states that a specific type of damage is unprevented able."""
+
+    damage_type: Expression | None = None
