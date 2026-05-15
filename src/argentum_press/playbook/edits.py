@@ -324,30 +324,30 @@ def alternative_already_exists(parent_rule_source: str, alternative_text: str) -
 
     The parent rule source is the full block emitted by
     ``context.dump_rule_definitions`` (one ``parentname: body0`` line, then
-    one ``| bodyN`` per continuation). We strip the optional ``<line>: ``
-    prefix dump format puts on each line, normalize each branch body, and
-    compare against the normalized incoming alternative.
+    one ``| bodyN`` per continuation). Some rules pack multiple branches on
+    a single line (e.g. ``neutralreference: "it" | "them" | "he"``), so we
+    strip the optional ``<line>: `` prefix, drop the leading rule-name
+    prefix on the first line, then split each line on ``|`` and check every
+    branch independently.
     """
     needle = normalize_branch_body(alternative_text)
     if not needle:
         return False
+    import re as _re
     for raw_line in parent_rule_source.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        # Strip "<N>: " prefix added by dump_rule_definitions.
-        import re as _re
         m = _re.match(r"^\d+:\s+(.*)$", line)
         if m:
             line = m.group(1).strip()
-        if "|" in line:
-            body = line[line.index("|") + 1:]
-        elif ":" in line:
-            body = line.split(":", 1)[1]
-        else:
-            continue
-        if normalize_branch_body(body) == needle:
-            return True
+        # Drop the rule-name prefix on the head line so its first branch
+        # isn't fused with the rule name.
+        if ":" in line and (("|" not in line) or line.index(":") < line.index("|")):
+            line = line.split(":", 1)[1]
+        for branch in line.split("|"):
+            if normalize_branch_body(branch) == needle:
+                return True
     return False
 
 

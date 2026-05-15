@@ -407,6 +407,21 @@ def test_alternative_already_exists_detects_duplicate():
     )
 
 
+def test_alternative_already_exists_handles_inline_pipe_branches():
+    # Rules like neutralreference pack multiple branches onto one line; the
+    # head branch and inline middle branches must still be detected as
+    # duplicates. Regression for an LLM that proposed `"he"` against this
+    # rule and the dup-check missed it.
+    parent_rule_source = (
+        'neutralreference: "it" | "them" | "he" | "him" | "she" | "her"\n'
+        '| "up" "to" "one" "target" "creature" -> uptoonetargetcreature\n'
+    )
+    assert edits.alternative_already_exists(parent_rule_source, '"it"')
+    assert edits.alternative_already_exists(parent_rule_source, '"he"')
+    assert edits.alternative_already_exists(parent_rule_source, '"her"')
+    assert not edits.alternative_already_exists(parent_rule_source, '"they"')
+
+
 def test_driver_aborts_on_p4_duplicate(monkeypatch, tmp_path: Path):
     # P4 emits an alternative that already exists in the parent rule's
     # body. The playbook must abort BEFORE applying any grammar edit (no
